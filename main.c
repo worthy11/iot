@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "wifi_manager.h"
 #include "http_manager.h"
+#include "hardware_manager.h"
 #include <stdio.h>
 
 static const char *TAG = "main";
@@ -18,19 +19,36 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    wifi_manager_init();
+    init_hardware();
+    init_wifi_manager();
+
+    bool wifi_was_connected = false;
+    xTaskCreate(&http_get_task, "http_get_task", 4096, NULL, 5, NULL);
 
     while (1)
     {
-        if (!wifi_manager_is_connected())
+        bool wifi_connected = wifi_manager_is_connected();
+
+        if (!wifi_connected)
         {
             ESP_LOGI(TAG, "Not connected to wifi!");
+            if (wifi_was_connected)
+            {
+                start_led_blink(500);
+                ESP_LOGI(TAG, "WiFi disconnected - starting LED blink");
+            }
         }
         else
         {
             ESP_LOGI(TAG, "Connected to wifi!");
+            if (!wifi_was_connected)
+            {
+                stop_led_blink();
+                ESP_LOGI(TAG, "WiFi connected - stopping LED blink");
+            }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        wifi_was_connected = wifi_connected;
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

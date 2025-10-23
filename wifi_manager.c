@@ -69,7 +69,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     }
 }
 
-void wifi_manager_init(void)
+void init_wifi_manager(void)
 {
     s_wifi_event_group = xEventGroupCreate();
 

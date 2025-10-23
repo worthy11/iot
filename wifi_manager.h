@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 
-void wifi_manager_init(void);
+void init_wifi_manager(void);
 bool wifi_manager_is_connected(void);
 
 #endif // WIFI_MANAGER_H
