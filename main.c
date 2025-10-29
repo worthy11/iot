@@ -3,11 +3,15 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "wifi_manager.h"
-#include "http_manager.h"
+#include "protocol_manager.h"
 #include "hardware_manager.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 static const char *TAG = "main";
+const char *HOST = "sieci.kis.agh.edu.pl";
+const int PORT = 80;
+const char *PATH = "/";
 
 void app_main(void)
 {
@@ -22,33 +26,40 @@ void app_main(void)
     init_hardware();
     init_wifi_manager();
 
-    bool wifi_was_connected = false;
-    xTaskCreate(&http_get_task, "http_get_task", 4096, NULL, 5, NULL);
+    // zmienic logike mrugania tak, zeby byla odpalana w innym tasku
+    // prawdopodobnie funkcja xTaskCreate
+
+    // trzeba zmienic te zmienna na cos innego co moze byc widziane przez
+    // rozne taski jednoczesnie
+    bool wifi_connected = false;
+
+    bool request_successful = false;
 
     while (1)
     {
-        bool wifi_connected = wifi_manager_is_connected();
-
         if (!wifi_connected)
         {
             ESP_LOGI(TAG, "Not connected to wifi!");
-            if (wifi_was_connected)
-            {
-                start_led_blink(500);
-                ESP_LOGI(TAG, "WiFi disconnected - starting LED blink");
-            }
         }
         else
         {
             ESP_LOGI(TAG, "Connected to wifi!");
-            if (!wifi_was_connected)
+            if (!request_successful)
             {
-                stop_led_blink();
-                ESP_LOGI(TAG, "WiFi connected - stopping LED blink");
+                int sock = tcp_connect(HOST, PORT);
+                char *response = http_get(sock, HOST, PATH);
+
+                if (response != NULL)
+                {
+                    printf("%s\n", response);
+                    free(response);
+                    request_successful = true;
+                }
+
+                tcp_disconnect(sock);
             }
         }
 
-        wifi_was_connected = wifi_connected;
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

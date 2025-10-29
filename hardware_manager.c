@@ -36,7 +36,7 @@ void start_led_blink(uint32_t period_ms)
 {
     if (led_blink_timer != NULL)
     {
-        stop_led_blink(); // Stop existing timer if running
+        stop_led_blink();
     }
 
     const esp_timer_create_args_t timer_args = {
