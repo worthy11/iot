@@ -3,27 +3,43 @@
 #include "protocol_manager.h"
 #include "esp_log.h"
 
-#define WEB_SERVER "sieci.kis.agh.edu.pl"
-#define WEB_PORT "80"
-#define WEB_PATH "/"
 
 static const char *TAG = "protocol_manager";
 
-int tcp_connect(const char *host, int port)
+int tcp_connector(const char *host, const char *port)
 {
-    struct sockaddr_in server_addr;
+    struct addrinfo hints;
+    struct addrinfo *res;
     int sock;
 
-    sock = socket(AF_INET, SOCK_STREAM, 0);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    inet_pton(AF_INET, host, &server_addr.sin_addr);
+    int err = getaddrinfo(host, port, &hints, &res);
+    if (err != 0 || res == NULL) {
+        ESP_LOGE(TAG, "DNS lookup failed for host %s", host);
+        return -1;
+    }
 
-    connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    sock = socket(res->ai_family, res->ai_socktype, 0);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "Unable to create socket");
+        freeaddrinfo(res);
+        return -1;
+    }
 
+    if (connect(sock, res->ai_addr, res->ai_addrlen) != 0) {
+        ESP_LOGE(TAG, "Socket connect failed");
+        close(sock);
+        freeaddrinfo(res);
+        return -1;
+    }
+
+    freeaddrinfo(res);
     return sock;
 }
+
 
 char *http_get(int sock, const char *hostname, const char *path)
 {

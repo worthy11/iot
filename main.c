@@ -9,8 +9,8 @@
 #include <stdlib.h>
 
 static const char *TAG = "main";
-const char *HOST = "sieci.kis.agh.edu.pl";
-const int PORT = 80;
+const char *HOST = "imgur.com";
+const char *PORT = "80";
 const char *PATH = "/";
 
 void app_main(void)
@@ -44,13 +44,16 @@ void app_main(void)
         else
         {
             ESP_LOGI(TAG, "Connected to wifi!");
+            printf("%s\n", request_successful ? "True" : "False");
+
             if (!request_successful)
             {
-                int sock = tcp_connect(HOST, PORT);
+                int sock = tcp_connector(HOST, PORT);
                 char *response = http_get(sock, HOST, PATH);
 
                 if (response != NULL)
                 {
+                    printf("Printing response:\n");
                     printf("%s\n", response);
                     free(response);
                     request_successful = true;
@@ -59,6 +62,7 @@ void app_main(void)
                 tcp_disconnect(sock);
             }
         }
+        wifi_connected = wifi_manager_is_connected();
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }

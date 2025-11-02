@@ -6,7 +6,7 @@
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 
-int tcp_connect(const char *host, int port);
+int tcp_connector(const char *host, const char *port);
 char *http_get(int sock, const char *hostname, const char *path);
 void tcp_disconnect(int sock);
 
