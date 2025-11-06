@@ -1,11 +1,10 @@
 #include <string.h>
+#include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
-#include "freertos/task.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "nvs_flash.h"
 #include "wifi_manager.h"
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -38,8 +37,8 @@
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WAPI_PSK
 #endif
 
-#define TEMP_HARDCODED_SSID "AndroidAP860B"
-#define TEMP_HARDCODED_PASS "pydm1943"
+#define TEMP_HARDCODED_SSID "worthy hotspot"
+#define TEMP_HARDCODED_PASS "worthy11"
 
 static const char *TAG = "wifi_manager";
 static EventGroupHandle_t s_wifi_event_group;
@@ -55,13 +54,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     {
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         s_wifi_connected = false;
-        ESP_LOGI(TAG, "retry to connect to the AP");
+        ESP_LOGI(TAG, "WiFi disconnected. Retrying connection to the AP");
         esp_wifi_connect();
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "WiFi connected. Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         s_wifi_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }

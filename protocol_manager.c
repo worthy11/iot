@@ -1,8 +1,9 @@
 #include <string.h>
 #include <stdlib.h>
-#include "protocol_manager.h"
 #include "esp_log.h"
-
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
+#include "protocol_manager.h"
 
 static const char *TAG = "protocol_manager";
 
@@ -17,19 +18,22 @@ int tcp_connector(const char *host, const char *port)
     hints.ai_socktype = SOCK_STREAM;
 
     int err = getaddrinfo(host, port, &hints, &res);
-    if (err != 0 || res == NULL) {
+    if (err != 0 || res == NULL)
+    {
         ESP_LOGE(TAG, "DNS lookup failed for host %s", host);
         return -1;
     }
 
     sock = socket(res->ai_family, res->ai_socktype, 0);
-    if (sock < 0) {
+    if (sock < 0)
+    {
         ESP_LOGE(TAG, "Unable to create socket");
         freeaddrinfo(res);
         return -1;
     }
 
-    if (connect(sock, res->ai_addr, res->ai_addrlen) != 0) {
+    if (connect(sock, res->ai_addr, res->ai_addrlen) != 0)
+    {
         ESP_LOGE(TAG, "Socket connect failed");
         close(sock);
         freeaddrinfo(res);
@@ -37,9 +41,9 @@ int tcp_connector(const char *host, const char *port)
     }
 
     freeaddrinfo(res);
+    ESP_LOGI(TAG, "Socket connect successful");
     return sock;
 }
-
 
 char *http_get(int sock, const char *hostname, const char *path)
 {
@@ -51,7 +55,8 @@ char *http_get(int sock, const char *hostname, const char *path)
              "\r\n",
              path, hostname);
 
-    if (send(sock, request, strlen(request), 0) < 0) {
+    if (send(sock, request, strlen(request), 0) < 0)
+    {
         ESP_LOGE(TAG, "Failed to send HTTP request");
         return NULL;
     }
@@ -59,30 +64,36 @@ char *http_get(int sock, const char *hostname, const char *path)
     size_t buffer_size = 8192;
     size_t total_received = 0;
     char *buffer = malloc(buffer_size);
-    if (buffer == NULL) {
+    if (buffer == NULL)
+    {
         ESP_LOGE(TAG, "Failed to allocate buffer");
         return NULL;
     }
 
-    while (1) {
+    while (1)
+    {
         int bytes_received = recv(sock, buffer + total_received, buffer_size - total_received - 1, 0);
-        
-        if (bytes_received < 0) {
+
+        if (bytes_received < 0)
+        {
             ESP_LOGE(TAG, "Receive failed");
             free(buffer);
             return NULL;
         }
-        
-        if (bytes_received == 0) {
+
+        if (bytes_received == 0)
+        {
             break;
         }
-        
+
         total_received += bytes_received;
-        
-        if (total_received >= buffer_size - 1) {
+
+        if (total_received >= buffer_size - 1)
+        {
             buffer_size *= 2;
             char *new_buffer = realloc(buffer, buffer_size);
-            if (new_buffer == NULL) {
+            if (new_buffer == NULL)
+            {
                 ESP_LOGE(TAG, "Failed to expand buffer");
                 free(buffer);
                 return NULL;
@@ -98,5 +109,9 @@ char *http_get(int sock, const char *hostname, const char *path)
 
 void tcp_disconnect(int sock)
 {
-    close(sock);
+    if (sock >= 0)
+    {
+        close(sock);
+        ESP_LOGI(TAG, "Socket close successful");
+    }
 }
