@@ -42,14 +42,12 @@ void init_hardware(void)
     if (led_task_handle == NULL)
     {
         xTaskCreate(
-            led_blink_task,     
-            "led_blink_task",   
-            2048,              
-            NULL,              
-            5,                 
-            &led_task_handle);  
+            led_blink_task,
+            "led_blink_task",
+            2048,
+            NULL,
+            5,
+            &led_task_handle);
         ESP_LOGI(TAG, "LED blink task started");
     }
 }
-
-

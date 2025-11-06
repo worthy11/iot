@@ -9,8 +9,6 @@
 #include "wifi_manager.h"
 
 #define WIFI_CONNECTED_BIT BIT0
-#define EXAMPLE_ESP_WIFI_SSID CONFIG_ESP_WIFI_SSID
-#define EXAMPLE_ESP_WIFI_PASS CONFIG_ESP_WIFI_PASSWORD
 
 #if CONFIG_ESP_WPA3_SAE_PWE_HUNT_AND_PECK
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_HUNT_AND_PECK
@@ -40,8 +38,8 @@
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WAPI_PSK
 #endif
 
-#define TEMP_HARDCODED_SSID "AndroidAP860B"
-#define TEMP_HARDCODED_PASS "pydm1943"
+#define TEMP_HARDCODED_SSID "worthy hotspot"
+#define TEMP_HARDCODED_PASS "worthy11"
 
 static const char *TAG = "wifi_manager";
 static EventGroupHandle_t s_wifi_event_group;

@@ -9,7 +9,7 @@
 #include <stdlib.h>
 
 static const char *TAG = "main";
-const char *HOST = "imgur.com";
+const char *HOST = "example.com";
 const char *PORT = "80";
 const char *PATH = "/";
 
@@ -26,13 +26,7 @@ void app_main(void)
     init_hardware();
     init_wifi_manager();
 
-    // zmienic logike mrugania tak, zeby byla odpalana w innym tasku
-    // prawdopodobnie funkcja xTaskCreate
-
-    // trzeba zmienic te zmienna na cos innego co moze byc widziane przez
-    // rozne taski jednoczesnie
     bool wifi_connected = false;
-
     bool request_successful = false;
 
     while (1)
@@ -44,7 +38,6 @@ void app_main(void)
         else
         {
             ESP_LOGI(TAG, "Connected to wifi!");
-            printf("%s\n", request_successful ? "True" : "False");
 
             if (!request_successful)
             {

@@ -5,5 +5,4 @@
 
 void init_hardware(void);
 
-
 #endif // HARDWARE_MANAGER_H

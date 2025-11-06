@@ -51,22 +51,48 @@ char *http_get(int sock, const char *hostname, const char *path)
              "\r\n",
              path, hostname);
 
-    send(sock, request, strlen(request), 0);
-
-    char *buffer = malloc(4096);
-    if (buffer == NULL)
-    {
+    if (send(sock, request, strlen(request), 0) < 0) {
+        ESP_LOGE(TAG, "Failed to send HTTP request");
         return NULL;
     }
 
-    int bytes_received = recv(sock, buffer, 4095, 0);
-    if (bytes_received < 0)
-    {
-        free(buffer);
+    size_t buffer_size = 8192;
+    size_t total_received = 0;
+    char *buffer = malloc(buffer_size);
+    if (buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate buffer");
         return NULL;
     }
 
-    buffer[bytes_received] = '\0';
+    while (1) {
+        int bytes_received = recv(sock, buffer + total_received, buffer_size - total_received - 1, 0);
+        
+        if (bytes_received < 0) {
+            ESP_LOGE(TAG, "Receive failed");
+            free(buffer);
+            return NULL;
+        }
+        
+        if (bytes_received == 0) {
+            break;
+        }
+        
+        total_received += bytes_received;
+        
+        if (total_received >= buffer_size - 1) {
+            buffer_size *= 2;
+            char *new_buffer = realloc(buffer, buffer_size);
+            if (new_buffer == NULL) {
+                ESP_LOGE(TAG, "Failed to expand buffer");
+                free(buffer);
+                return NULL;
+            }
+            buffer = new_buffer;
+        }
+    }
+
+    buffer[total_received] = '\0';
+    ESP_LOGI(TAG, "Received %d bytes", total_received);
     return buffer;
 }
 
