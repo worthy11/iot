@@ -11,7 +11,7 @@
 static const char *TAG = "hardware_manager";
 static TaskHandle_t led_task_handle = NULL;
 
-static void led_blink_task(void *pvParameter)
+static void led_blink_task()
 {
     bool led_state = false;
 
