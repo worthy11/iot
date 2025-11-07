@@ -1,0 +1,8 @@
+- WIFI_INIT_CONFIG_DEFAULT -- informacje o tasku takie jak rozmiary bufferow, priority, core do ktorego jest przypisany
+- ESP_ERROR_CHECK -- sprawdza czy return value to ESP_OK, moze zwrocic np. ze jest brak pamieci; automatycznie loguje typ bledu
+- esp_netif_init - inicjalizuje stack TCP/IP
+- esp_event_loop_create_default - robi loopa dla system events, czyli WIFI_EVENT, IP_EVENT itp. dzieki temu sa one lapane przez handler
+- esp_wifi_init - inicjalizuje sterownik wifi
+- esp_event_handler_instance_register - rejestruje handler, czyli podlaczamy go tak aby zajmowal sie eventami w naszym event loopie
+- s_wifi_event_group - powoduje, ze funkcja init_wifi_manager nie returnuje od razu, tylko czeka na WIFI_CONNECTED_BIT
+- xEventGroupWaitBits - handle, bit, clear on exit (false nie clearuje), wait for all bits (false czeka na ktorykolwiek, nie wszystkie), timeout (u nas czeka az sie nie ustawi bit)
