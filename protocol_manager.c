@@ -47,8 +47,22 @@ int tcp_connector(const char *host, const char *port)
 
 char *http_get(int sock, const char *hostname, const char *path)
 {
-    char request[512];
-    snprintf(request, sizeof(request),
+    int request_size = snprintf(NULL, 0,
+                                "GET %s HTTP/1.1\r\n"
+                                "Host: %s\r\n"
+                                "Connection: close\r\n"
+                                "\r\n",
+                                path, hostname) +
+                       1;
+
+    char *request = malloc(request_size);
+    if (request == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to allocate request buffer");
+        return NULL;
+    }
+
+    snprintf(request, request_size,
              "GET %s HTTP/1.1\r\n"
              "Host: %s\r\n"
              "Connection: close\r\n"
@@ -58,8 +72,11 @@ char *http_get(int sock, const char *hostname, const char *path)
     if (send(sock, request, strlen(request), 0) < 0)
     {
         ESP_LOGE(TAG, "Failed to send HTTP request");
+        free(request);
         return NULL;
     }
+
+    free(request);
 
     size_t buffer_size = 8192;
     size_t total_received = 0;

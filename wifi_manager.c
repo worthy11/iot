@@ -2,12 +2,15 @@
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/task.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "wifi_manager.h"
+#include "hardware_manager.h"
 
 #define WIFI_CONNECTED_BIT BIT0
+#define WIFI_STATUS_BIT BIT0
 
 #if CONFIG_ESP_WPA3_SAE_PWE_HUNT_AND_PECK
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_HUNT_AND_PECK
@@ -42,6 +45,7 @@
 
 static const char *TAG = "wifi_manager";
 static EventGroupHandle_t s_wifi_event_group;
+EventGroupHandle_t wifi_status_event_group = NULL;
 static bool s_wifi_connected = false;
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
@@ -53,8 +57,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        if (wifi_status_event_group != NULL)
+        {
+            xEventGroupClearBits(wifi_status_event_group, WIFI_STATUS_BIT);
+        }
         s_wifi_connected = false;
         ESP_LOGI(TAG, "WiFi disconnected. Retrying connection to the AP");
+        if (led_task_handle != NULL)
+        {
+            xTaskNotify(led_task_handle, 1, eSetValueWithOverwrite);
+        }
         esp_wifi_connect();
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
@@ -63,12 +75,21 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         ESP_LOGI(TAG, "WiFi connected. Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         s_wifi_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        if (wifi_status_event_group != NULL)
+        {
+            xEventGroupSetBits(wifi_status_event_group, WIFI_STATUS_BIT);
+        }
+        if (led_task_handle != NULL)
+        {
+            xTaskNotify(led_task_handle, 1, eSetValueWithOverwrite);
+        }
     }
 }
 
 void init_wifi_manager(void)
 {
     s_wifi_event_group = xEventGroupCreate();
+    wifi_status_event_group = xEventGroupCreate();
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
