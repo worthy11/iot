@@ -1,299 +1,180 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "host/ble_hs.h"
+#include "host/ble_gatt.h"
 
 #include "esp_log.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/ble_hs_adv.h"
+#include "host/ble_gatt.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "ble_manager.h"
 
 static const char *TAG = "ble_manager";
 
-#define UUID_IMMEDIATE_ALERT 0x1802
-#define UUID_ALERT_LEVEL 0x2A06
-#define UUID_BATTERY_SERVICE 0x180F
-#define UUID_BATTERY_LEVEL 0x2A19
-#define UUID_VENDOR_SERVICE 0xFFE0
-#define UUID_VENDOR_STATE 0xFFE1
+#define MAX_REGISTERED_DEVICES 2
 
-typedef enum
-{
-    ITAG_CHAR_ALERT_LEVEL = 0,
-    ITAG_CHAR_BATTERY_LEVEL,
-    ITAG_CHAR_VENDOR_STATE,
-    ITAG_CHAR_COUNT
-} itag_char_id_t;
-
-typedef struct
-{
-    bool present;
-    uint16_t value_handle;
-    uint16_t cccd_handle;
-} itag_characteristic_t;
-
-typedef struct
-{
-    uint16_t conn_handle;
-    bool initial_reads_requested;
-    itag_characteristic_t chars[ITAG_CHAR_COUNT];
-} itag_ctx_t;
-
-static itag_ctx_t s_ctx = {
-    .conn_handle = BLE_HS_CONN_HANDLE_NONE,
-};
+static const ble_device_driver_t *s_registered_devices[MAX_REGISTERED_DEVICES];
+static int s_num_devices = 0;
 static bool s_connecting = false;
-static TaskHandle_t s_alert_task;
+static uint16_t s_active_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static const ble_device_driver_t *s_active_device = NULL;
 
-#define ITAG_ALERT_LEVEL 1
-#define ITAG_ALERT_INTERVAL_MS 10000
-#define ITAG_ALERT_IDLE_DELAY_MS 1000
+int ble_manager_on_char(uint16_t conn_handle,
+                        const struct ble_gatt_error *error,
+                        const struct ble_gatt_chr *chr,
+                        void *arg);
 
-static void start_scan(void);
-static int gap_event(struct ble_gap_event *event, void *arg);
-static int itag_on_service(uint16_t conn_handle,
-                           const struct ble_gatt_error *error,
-                           const struct ble_gatt_svc *svc,
-                           void *arg);
-static int itag_on_characteristic(uint16_t conn_handle,
-                                  const struct ble_gatt_error *error,
-                                  const struct ble_gatt_chr *chr,
-                                  void *arg);
-static bool extract_name_field(const uint8_t *data,
-                               uint8_t len,
-                               char *out,
-                               size_t out_len);
-static void log_adv_payload(const char *prefix, const char *addr_str, const uint8_t *data, uint8_t len);
-static void itag_read_task(void *param);
-void ble_manager_read_battery_level();
-
-static bool extract_name_field(const uint8_t *data,
-                               uint8_t len,
-                               char *out,
-                               size_t out_len)
+typedef struct
 {
-    if (data == NULL || len == 0 || out == NULL || out_len == 0)
+    ble_svc_config_t *svc;
+    EventGroupHandle_t event_group;
+} ble_svc_arg_t;
+
+int ble_manager_register_device(const ble_device_driver_t *driver)
+{
+    if (driver == NULL || driver->name == NULL)
+    {
+        return -1;
+    }
+
+    if (s_num_devices >= MAX_REGISTERED_DEVICES)
+    {
+        ESP_LOGE(TAG, "Maximum number of devices reached");
+        return -1;
+    }
+
+    s_registered_devices[s_num_devices++] = driver;
+    ESP_LOGI(TAG, "Registered device: %s", driver->name);
+    return 0;
+}
+
+static bool match_device_by_services(const ble_device_driver_t *device, const struct ble_hs_adv_fields *fields)
+{
+    if (!fields)
     {
         return false;
     }
 
-    bool found = false;
-    size_t offset = 0;
-
-    while (offset < len)
+    if (fields->uuids16 != NULL && fields->num_uuids16 > 0)
     {
-        uint8_t field_len = data[offset];
-        offset++;
-
-        if (field_len == 0)
+        for (int i = 0; i < device->config->n_services; i++)
         {
-            break;
-        }
-
-        if (offset + field_len > len)
-        {
-            ESP_LOGD(TAG, "AD field overruns payload (offset=%u len=%u total=%u)",
-                     (unsigned)offset - 1, field_len, len);
-            break;
-        }
-
-        if (field_len < 1)
-        {
-            continue;
-        }
-
-        uint8_t type = data[offset];
-        offset++;
-        uint8_t value_len = field_len - 1;
-
-        if ((type == BLE_HS_ADV_TYPE_COMP_NAME) ||
-            (type == BLE_HS_ADV_TYPE_INCOMP_NAME))
-        {
-            size_t copy_len = value_len;
-            if (copy_len >= out_len)
+            uint16_t expected_uuid = device->config->services[i].uuid;
+            for (int j = 0; j < fields->num_uuids16; j++)
             {
-                copy_len = out_len - 1;
+                if (fields->uuids16[j].value == expected_uuid)
+                {
+                    return true;
+                }
             }
-            memcpy(out, &data[offset], copy_len);
-            out[copy_len] = '\0';
-            found = true;
-            break;
         }
-
-        offset += value_len;
     }
-
-    return found;
+    return false;
 }
 
-static void log_adv_payload(const char *prefix, const char *addr_str, const uint8_t *data, uint8_t len)
+static void normalize_name(char *dst, const char *src, size_t dst_size)
 {
-    if (data == NULL || len == 0)
+    if (!dst || !src || dst_size == 0)
     {
         return;
     }
 
-    ESP_LOGI(TAG, "%s payload addr=%s len=%u", prefix, addr_str, len);
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, data, len, ESP_LOG_INFO);
+    size_t i = 0;
+    size_t j = 0;
+    while (src[i] != '\0' && j < dst_size - 1)
+    {
+        if (src[i] != ' ')
+        {
+            dst[j++] = (char)tolower((unsigned char)src[i]);
+        }
+        i++;
+    }
+    dst[j] = '\0';
 }
 
-static void itag_read_task(void *param)
+static bool match_device_by_name(const ble_device_driver_t *device, const char *name)
 {
-    (void)param;
-
-    const TickType_t alert_delay = pdMS_TO_TICKS(ITAG_ALERT_INTERVAL_MS);
-    const TickType_t idle_delay = pdMS_TO_TICKS(ITAG_ALERT_IDLE_DELAY_MS);
-
-    while (1)
+    if (!device || !device->config || !name)
     {
-        if (s_ctx.conn_handle != BLE_HS_CONN_HANDLE_NONE &&
-            s_ctx.chars[ITAG_CHAR_BATTERY_LEVEL].present)
-        {
-            // ble_manager_trigger_beep(ITAG_ALERT_LEVEL);
-            ble_manager_read_battery_level();
-            vTaskDelay(alert_delay);
-        }
-        else
-        {
-            vTaskDelay(idle_delay);
-        }
+        return false;
     }
+
+    if (!device->config->name)
+    {
+        return false;
+    }
+
+    char normalized_device[32];
+    char normalized_name[32];
+
+    normalize_name(normalized_device, device->config->name, sizeof(normalized_device));
+    normalize_name(normalized_name, name, sizeof(normalized_name));
+
+    return strcmp(normalized_device, normalized_name) == 0;
 }
 
-static int itag_read_cb(uint16_t conn_handle,
-                        const struct ble_gatt_error *error,
-                        struct ble_gatt_attr *attr,
-                        void *arg)
+static bool extract_name_from_raw(const uint8_t *data, uint16_t len, char *name_buf, size_t name_buf_size)
 {
-    itag_char_id_t id = (itag_char_id_t)(uintptr_t)arg;
-
-    if (error->status != 0)
+    if (!data || len == 0 || !name_buf || name_buf_size == 0)
     {
-        ESP_LOGW(TAG, "Read failed (char %d, status=%d)", id, error->status);
-        return 0;
+        return false;
     }
 
-    uint8_t buf[32];
-    uint16_t len = OS_MBUF_PKTLEN(attr->om);
-    if (len > sizeof(buf))
-    {
-        len = sizeof(buf);
-    }
-    os_mbuf_copydata(attr->om, 0, len, buf);
+    const uint8_t *p = data;
+    const uint8_t *end = data + len;
 
-    switch (id)
+    while (p < end)
     {
-    case ITAG_CHAR_BATTERY_LEVEL:
-        if (len > 0)
+        if (p + 1 >= end)
         {
-            ESP_LOGI(TAG, "Battery level: %u%%", buf[0]);
+            break;
         }
-        else
+
+        uint8_t field_len = p[0];
+        if (field_len == 0 || p + 1 + field_len > end)
         {
-            ESP_LOGI(TAG, "Battery level: <empty>");
+            break;
         }
-        break;
 
-    case ITAG_CHAR_VENDOR_STATE:
-        ESP_LOGI(TAG, "Vendor state (%u bytes)", len);
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, buf, len, ESP_LOG_INFO);
-        break;
+        uint8_t field_type = p[1];
 
-    default:
-        ESP_LOGI(TAG, "Characteristic %d read (%u bytes)", id, len);
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, buf, len, ESP_LOG_INFO);
-        break;
-    }
-
-    return 0;
-}
-
-static int itag_write_cb(uint16_t conn_handle,
-                         const struct ble_gatt_error *error,
-                         struct ble_gatt_attr *attr,
-                         void *arg)
-{
-    itag_char_id_t id = (itag_char_id_t)(uintptr_t)arg;
-
-    if (error->status != 0)
-    {
-        ESP_LOGW(TAG, "Write failed (char %d, status=%d)", id, error->status);
-        return 0;
-    }
-
-    ESP_LOGI(TAG, "Write OK (char %d, handle=0x%04x)", id, attr->handle);
-    return 0;
-}
-
-static int itag_on_characteristic(uint16_t conn_handle,
-                                  const struct ble_gatt_error *error,
-                                  const struct ble_gatt_chr *chr,
-                                  void *arg)
-{
-    if (error->status == BLE_HS_EDONE)
-    {
-        if (!s_ctx.initial_reads_requested &&
-            s_ctx.chars[ITAG_CHAR_BATTERY_LEVEL].present)
+        if (field_type == 0x08 || field_type == 0x09)
         {
-            int rc = ble_gattc_read(conn_handle,
-                                    s_ctx.chars[ITAG_CHAR_BATTERY_LEVEL].value_handle,
-                                    itag_read_cb,
-                                    (void *)(uintptr_t)ITAG_CHAR_BATTERY_LEVEL);
-            if (rc != 0)
+            uint8_t name_len = field_len - 1;
+            if (name_len > 0 && name_len < name_buf_size)
             {
-                ESP_LOGW(TAG, "Failed to read battery level: %d", rc);
-            }
-            else
-            {
-                s_ctx.initial_reads_requested = true;
+                memcpy(name_buf, p + 2, name_len);
+                name_buf[name_len] = '\0';
+                return true;
             }
         }
-        return 0;
+
+        p += 1 + field_len;
     }
 
-    if (error->status != 0)
-    {
-        ESP_LOGE(TAG, "Characteristic discovery error: %d", error->status);
-        return error->status;
-    }
-
-    const ble_uuid_t *uuid = &chr->uuid.u;
-
-    if (ble_uuid_cmp(uuid, BLE_UUID16_DECLARE(UUID_ALERT_LEVEL)) == 0)
-    {
-        s_ctx.chars[ITAG_CHAR_ALERT_LEVEL].present = true;
-        s_ctx.chars[ITAG_CHAR_ALERT_LEVEL].value_handle = chr->val_handle;
-        ESP_LOGI(TAG, "Alert Level characteristic handle=0x%04x", chr->val_handle);
-    }
-    else if (ble_uuid_cmp(uuid, BLE_UUID16_DECLARE(UUID_BATTERY_LEVEL)) == 0)
-    {
-        s_ctx.chars[ITAG_CHAR_BATTERY_LEVEL].present = true;
-        s_ctx.chars[ITAG_CHAR_BATTERY_LEVEL].value_handle = chr->val_handle;
-        ESP_LOGI(TAG, "Battery Level characteristic handle=0x%04x", chr->val_handle);
-    }
-    else if (ble_uuid_cmp(uuid, BLE_UUID16_DECLARE(UUID_VENDOR_STATE)) == 0)
-    {
-        s_ctx.chars[ITAG_CHAR_VENDOR_STATE].present = true;
-        s_ctx.chars[ITAG_CHAR_VENDOR_STATE].value_handle = chr->val_handle;
-        ESP_LOGI(TAG, "Vendor characteristic handle=0x%04x", chr->val_handle);
-    }
-
-    return 0;
+    return false;
 }
 
-static int itag_on_service(uint16_t conn_handle,
-                           const struct ble_gatt_error *error,
-                           const struct ble_gatt_svc *svc,
-                           void *arg)
+int ble_manager_on_svc(uint16_t conn_handle,
+                       const struct ble_gatt_error *error,
+                       const struct ble_gatt_svc *svc,
+                       void *arg)
 {
+    ble_device_config_t *ctx = (ble_device_config_t *)arg;
+
     if (error->status == BLE_HS_EDONE)
     {
         ESP_LOGI(TAG, "Service discovery complete");
@@ -307,40 +188,201 @@ static int itag_on_service(uint16_t conn_handle,
     }
 
     const ble_uuid_t *uuid = &svc->uuid.u;
+    uint16_t service_uuid = 0;
 
-    if (ble_uuid_cmp(uuid, BLE_UUID16_DECLARE(UUID_IMMEDIATE_ALERT)) == 0)
+    if (uuid->type == BLE_UUID_TYPE_16)
     {
-        ESP_LOGI(TAG, "Found Immediate Alert service (start=0x%04x end=0x%04x)",
-                 svc->start_handle, svc->end_handle);
-        ble_gattc_disc_all_chrs(conn_handle,
-                                svc->start_handle,
-                                svc->end_handle,
-                                itag_on_characteristic,
-                                NULL);
+        service_uuid = BLE_UUID16(uuid)->value;
     }
-    else if (ble_uuid_cmp(uuid, BLE_UUID16_DECLARE(UUID_BATTERY_SERVICE)) == 0)
+    else
     {
-        ESP_LOGI(TAG, "Found Battery service (start=0x%04x end=0x%04x)",
-                 svc->start_handle, svc->end_handle);
-        ble_gattc_disc_all_chrs(conn_handle,
-                                svc->start_handle,
-                                svc->end_handle,
-                                itag_on_characteristic,
-                                NULL);
+        ESP_LOGW(TAG, "Service UUID is not 16-bit (type=%d)", uuid->type);
+        return 0;
     }
-    else if (ble_uuid_cmp(uuid, BLE_UUID16_DECLARE(UUID_VENDOR_SERVICE)) == 0)
+
+    bool found_in_config = false;
+    for (int i = 0; i < ctx->n_services; i++)
     {
-        ESP_LOGI(TAG, "Found vendor service 0x%04x (start=0x%04x end=0x%04x)",
-                 UUID_VENDOR_SERVICE, svc->start_handle, svc->end_handle);
-        ble_gattc_disc_all_chrs(conn_handle,
-                                svc->start_handle,
-                                svc->end_handle,
-                                itag_on_characteristic,
-                                NULL);
+        if (ctx->services[i].uuid == service_uuid)
+        {
+            found_in_config = true;
+            ESP_LOGI(TAG, "Found service 0x%04x (start=0x%04x end=0x%04x)",
+                     service_uuid, svc->start_handle, svc->end_handle);
+
+            ble_svc_arg_t *arg = malloc(sizeof(ble_svc_arg_t));
+            if (arg == NULL)
+            {
+                ESP_LOGE(TAG, "Failed to allocate memory for service arg");
+                return 0;
+            }
+            arg->svc = &ctx->services[i];
+            arg->event_group = ctx->event_group;
+            ble_gattc_disc_all_chrs(conn_handle,
+                                    svc->start_handle,
+                                    svc->end_handle,
+                                    ble_manager_on_char, arg);
+            break;
+        }
+    }
+
+    if (!found_in_config)
+    {
+        ESP_LOGI(TAG, "Found vendor service 0x%04x (start=0x%04x end=0x%04x) - not in config",
+                 service_uuid, svc->start_handle, svc->end_handle);
     }
 
     return 0;
 }
+
+int ble_manager_on_char(uint16_t conn_handle,
+                        const struct ble_gatt_error *error,
+                        const struct ble_gatt_chr *chr,
+                        void *arg)
+{
+    ble_svc_arg_t *ctx = (ble_svc_arg_t *)arg;
+    ble_svc_config_t *svc = ctx->svc;
+
+    if (error->status == BLE_HS_EDONE)
+    {
+        ESP_LOGI(TAG, "Characteristic discovery complete");
+        free(arg);
+        return 0;
+    }
+
+    if (error->status != 0)
+    {
+        ESP_LOGE(TAG, "Characteristic discovery error: %d", error->status);
+        free(arg);
+        return error->status;
+    }
+
+    const ble_uuid_t *uuid = &chr->uuid.u;
+    uint16_t char_uuid = 0;
+
+    if (uuid->type == BLE_UUID_TYPE_16)
+    {
+        char_uuid = BLE_UUID16(uuid)->value;
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Characteristic UUID is not 16-bit (type=%d)", uuid->type);
+        return 0;
+    }
+
+    bool found_in_config = false;
+    for (int i = 0; i < svc->n_chars; i++)
+    {
+        if (svc->chars[i].uuid == char_uuid)
+        {
+            found_in_config = true;
+            svc->chars[i].handle = chr->val_handle;
+            ESP_LOGI(TAG, "Found characteristic 0x%04x (service 0x%04x) handle=0x%04x",
+                     char_uuid, svc->uuid, chr->val_handle);
+            xEventGroupSetBits(ctx->event_group, svc->chars[i].bit);
+            break;
+        }
+    }
+
+    if (!found_in_config)
+    {
+        ESP_LOGI(TAG, "Found vendor characteristic 0x%04x (service 0x%04x) handle=0x%04x - not in config",
+                 char_uuid, svc->uuid, chr->val_handle);
+    }
+
+    return 0;
+}
+
+static int ble_manager_on_read(uint16_t conn_handle,
+                               const struct ble_gatt_error *error,
+                               struct ble_gatt_attr *attr,
+                               void *arg)
+{
+    ble_char_config_t *char_config = (ble_char_config_t *)arg;
+
+    if (char_config->read_cb)
+    {
+        if (error->status == 0 && attr != NULL && attr->om != NULL)
+        {
+            char_config->read_cb(attr->om->om_data, attr->om->om_len, 0);
+        }
+        else
+        {
+            char_config->read_cb(NULL, 0, error->status != 0 ? error->status : -1);
+        }
+    }
+
+    return 0;
+}
+
+static int ble_manager_on_write(uint16_t conn_handle,
+                                const struct ble_gatt_error *error,
+                                struct ble_gatt_attr *attr,
+                                void *arg)
+{
+    ble_char_config_t *char_config = (ble_char_config_t *)arg;
+
+    ESP_LOGI(TAG, "ble_manager_on_write called: status=%d, char_uuid=0x%04x, write_cb=%p",
+             error->status, char_config ? char_config->uuid : 0, char_config ? char_config->write_cb : NULL);
+
+    if (char_config && char_config->write_cb)
+    {
+        char_config->write_cb(error->status);
+    }
+    else if (char_config)
+    {
+        ESP_LOGI(TAG, "CCCD write completed for characteristic 0x%04x (status=%d)", char_config->uuid, error->status);
+    }
+
+    return 0;
+}
+
+int ble_manager_read_char(ble_char_config_t *char_config)
+{
+    if (!char_config || !s_active_device || !s_active_device->config || s_active_conn_handle == BLE_HS_CONN_HANDLE_NONE)
+    {
+        return -1;
+    }
+
+    if (char_config->handle == 0)
+    {
+        ESP_LOGE(TAG, "Characteristic 0x%04x not discovered", char_config->uuid);
+        return -1;
+    }
+
+    int rc = ble_gattc_read(s_active_conn_handle, char_config->handle, ble_manager_on_read, char_config);
+    if (rc != 0)
+    {
+        ESP_LOGE(TAG, "Failed to initiate read: %d", rc);
+        return rc;
+    }
+
+    return 0;
+}
+
+int ble_manager_write_char(ble_char_config_t *char_config, const uint8_t *data, uint16_t len)
+{
+    if (!char_config || !s_active_device || !s_active_device->config || s_active_conn_handle == BLE_HS_CONN_HANDLE_NONE)
+    {
+        return -1;
+    }
+
+    if (char_config->handle == 0)
+    {
+        ESP_LOGE(TAG, "Characteristic 0x%04x not discovered", char_config->uuid);
+        return -1;
+    }
+
+    int rc = ble_gattc_write_flat(s_active_conn_handle, char_config->handle, data, len, ble_manager_on_write, char_config);
+    if (rc != 0)
+    {
+        ESP_LOGE(TAG, "Failed to initiate write: %d", rc);
+        return rc;
+    }
+
+    return 0;
+}
+
+static void start_scan(void);
 
 static int gap_event(struct ble_gap_event *event, void *arg)
 {
@@ -356,18 +398,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                  event->disc.addr.val[1], event->disc.addr.val[0]);
 
         bool is_scan_rsp = (event->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP);
-
-        if (event->disc.length_data == 0 || event->disc.data == NULL)
-        {
-            ESP_LOGI(TAG,
-                     "%s (empty payload) addr=%s rssi=%ddBm type=0x%02X",
-                     is_scan_rsp ? "SCAN_RSP" : "ADV",
-                     addr_str,
-                     event->disc.rssi,
-                     event->disc.event_type);
-            return 0;
-        }
-
         struct ble_hs_adv_fields fields;
         bool parsed = (ble_hs_adv_parse_fields(&fields,
                                                event->disc.data,
@@ -378,14 +408,13 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                      is_scan_rsp ? "SCAN_RSP" : "ADV",
                      addr_str,
                      event->disc.length_data);
-            log_adv_payload(is_scan_rsp ? "SCAN_RSP" : "ADV",
-                            addr_str,
-                            event->disc.data,
-                            event->disc.length_data);
+            if (event->disc.data != NULL && event->disc.length_data > 0)
+            {
+                ESP_LOG_BUFFER_HEX_LEVEL(TAG, event->disc.data, event->disc.length_data, ESP_LOG_INFO);
+            }
         }
 
         char name_buf[32] = "<no name>";
-        bool has_name = false;
         if (parsed && fields.name && fields.name_len > 0)
         {
             size_t copy_len = fields.name_len;
@@ -395,86 +424,103 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             }
             memcpy(name_buf, fields.name, copy_len);
             name_buf[copy_len] = '\0';
-            has_name = true;
         }
-        else if (extract_name_field(event->disc.data,
-                                    event->disc.length_data,
-                                    name_buf,
-                                    sizeof(name_buf)))
+        else if (!parsed && event->disc.data && event->disc.length_data > 0)
         {
-            has_name = true;
+            extract_name_from_raw(event->disc.data, event->disc.length_data, name_buf, sizeof(name_buf));
+        }
+
+        char uuid_str[128] = "";
+        if (parsed && fields.uuids16 != NULL && fields.num_uuids16 > 0)
+        {
+            char *p = uuid_str;
+            for (int i = 0; i < fields.num_uuids16 && i < 8; i++)
+            {
+                p += snprintf(p, sizeof(uuid_str) - (p - uuid_str), "0x%04X ", fields.uuids16[i].value);
+            }
         }
 
         ESP_LOGI(TAG,
-                 "%s addr=%s rssi=%ddBm type=0x%02X name=\"%s\"",
+                 "%s addr=%s rssi=%ddBm type=0x%02X name=\"%s\" UUIDs=[%s]",
                  is_scan_rsp ? "SCAN_RSP" : "ADV",
                  addr_str,
                  event->disc.rssi,
                  event->disc.event_type,
-                 name_buf);
+                 name_buf,
+                 uuid_str[0] ? uuid_str : "<none>");
 
         bool connectable = (event->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_ADV_IND) ||
                            (event->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND) ||
                            is_scan_rsp;
 
-        bool name_matches = false;
-        if (has_name)
+        if (!s_connecting && s_active_conn_handle == BLE_HS_CONN_HANDLE_NONE && connectable)
         {
-            const char target[] = "itag";
-            if (strlen(name_buf) >= sizeof(target) - 1)
+            for (int i = 0; i < s_num_devices; i++)
             {
-                name_matches = (strncasecmp(name_buf, target, sizeof(target) - 1) == 0);
+                bool matched = false;
+                if (parsed)
+                {
+                    matched = match_device_by_services(s_registered_devices[i], &fields);
+                }
+
+                if (!matched && strcmp(name_buf, "<no name>") != 0)
+                {
+                    matched = match_device_by_name(s_registered_devices[i], name_buf);
+                }
+
+                if (matched)
+                {
+                    ESP_LOGI(TAG, "Found %s (%s), connecting...",
+                             s_registered_devices[i]->name, addr_str);
+
+                    if (ble_gap_disc_cancel() != 0)
+                    {
+                        ESP_LOGW(TAG, "Failed to cancel scan before connect");
+                    }
+
+                    uint8_t own_addr_type;
+                    if (ble_hs_id_infer_auto(0, &own_addr_type) == 0 &&
+                        ble_gap_connect(own_addr_type,
+                                        &event->disc.addr,
+                                        30000,
+                                        NULL,
+                                        gap_event,
+                                        (void *)s_registered_devices[i]) == 0)
+                    {
+                        s_connecting = true;
+                        return 0;
+                    }
+
+                    ESP_LOGW(TAG, "Immediate connect attempt failed; resuming scan");
+                    break;
+                }
             }
-        }
-
-        if (!s_connecting &&
-            s_ctx.conn_handle == BLE_HS_CONN_HANDLE_NONE &&
-            connectable &&
-            name_matches)
-        {
-            ESP_LOGI(TAG, "Found iTag (%s), connecting...", addr_str);
-
-            if (ble_gap_disc_cancel() != 0)
-            {
-                ESP_LOGW(TAG, "Failed to cancel scan before connect");
-            }
-
-            uint8_t own_addr_type;
-            if (ble_hs_id_infer_auto(0, &own_addr_type) == 0 &&
-                ble_gap_connect(own_addr_type,
-                                &event->disc.addr,
-                                30000,
-                                NULL,
-                                gap_event,
-                                NULL) == 0)
-            {
-                s_connecting = true;
-                return 0;
-            }
-
-            ESP_LOGW(TAG, "Immediate connect attempt failed; resuming scan");
-            start_scan();
         }
         return 0;
     }
 
     case BLE_GAP_EVENT_CONNECT:
+    {
         s_connecting = false;
+        const ble_device_driver_t *device = (const ble_device_driver_t *)arg;
+
         if (event->connect.status == 0)
         {
-            ESP_LOGI(TAG, "Connected (handle=%d)", event->connect.conn_handle);
+            s_active_conn_handle = event->connect.conn_handle;
+            s_active_device = device;
 
-            s_ctx.conn_handle = event->connect.conn_handle;
-            s_ctx.initial_reads_requested = false;
-            memset(s_ctx.chars, 0, sizeof(s_ctx.chars));
-
-            int rc = ble_gattc_disc_all_svcs(s_ctx.conn_handle,
-                                             itag_on_service,
-                                             NULL);
-            if (rc != 0)
+            if (device && device->config)
             {
-                ESP_LOGE(TAG, "Service discovery failed: %d", rc);
-                ble_gap_terminate(s_ctx.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                ESP_LOGI(TAG, "[%s] Connected (handle=%d)", device->name, event->connect.conn_handle);
+                xEventGroupSetBits(device->config->event_group, device->config->bit_connected);
+
+                int rc = ble_gattc_disc_all_svcs(event->connect.conn_handle,
+                                                 ble_manager_on_svc,
+                                                 (void *)device->config);
+                if (rc != 0)
+                {
+                    ESP_LOGE(TAG, "[%s] Service discovery failed: %d", device->name, rc);
+                }
             }
         }
         else
@@ -483,15 +529,35 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             start_scan();
         }
         return 0;
+    }
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "Disconnected (reason=%d)", event->disconnect.reason);
-        s_ctx.conn_handle = BLE_HS_CONN_HANDLE_NONE;
-        s_ctx.initial_reads_requested = false;
-        memset(s_ctx.chars, 0, sizeof(s_ctx.chars));
-        s_connecting = false;
+    {
+        if (s_active_device)
+        {
+            ESP_LOGI(TAG, "[%s] Disconnected (reason=0x%02x)", s_active_device->name, event->disconnect.reason);
+
+            for (int i = 0; i < s_active_device->config->n_services; i++)
+            {
+                for (int j = 0; j < s_active_device->config->services[i].n_chars; j++)
+                {
+                    s_active_device->config->services[i].chars[j].handle = 0;
+                }
+            }
+
+            xEventGroupClearBits(s_active_device->config->event_group,
+                                 s_active_device->config->bit_connected);
+        }
+        else
+        {
+            ESP_LOGI(TAG, "Disconnected (reason=0x%02x)", event->disconnect.reason);
+        }
+
+        s_active_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        s_active_device = NULL;
         start_scan();
         return 0;
+    }
 
     case BLE_GAP_EVENT_DISC_COMPLETE:
         ESP_LOGI(TAG, "Scan stopped (reason=%d)", event->disc_complete.reason);
@@ -531,8 +597,8 @@ static void start_scan(void)
 {
     uint8_t own_addr_type;
     struct ble_gap_disc_params params = {
-        .passive = 0,
-        .filter_duplicates = 0,
+        .passive = 1,
+        .filter_duplicates = 1,
     };
 
     if (ble_hs_id_infer_auto(0, &own_addr_type) != 0)
@@ -552,76 +618,9 @@ void init_ble_manager(void)
 {
     ESP_ERROR_CHECK(nimble_port_init());
 
-    if (s_alert_task == NULL)
-    {
-        BaseType_t created = xTaskCreate(itag_read_task,
-                                         "itag_alert",
-                                         2048,
-                                         NULL,
-                                         tskIDLE_PRIORITY + 1,
-                                         &s_alert_task);
-        if (created != pdPASS)
-        {
-            ESP_LOGE(TAG, "Failed to create alert task");
-            s_alert_task = NULL;
-        }
-    }
-
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.sync_cb = on_sync;
-    ble_svc_gap_device_name_set("esp32-itag-client");
+    ble_svc_gap_device_name_set("esp32-ble-client");
 
     nimble_port_freertos_init(host_task);
-}
-
-void ble_manager_trigger_beep(uint8_t level)
-{
-    if (s_ctx.conn_handle == BLE_HS_CONN_HANDLE_NONE)
-    {
-        ESP_LOGW(TAG, "Cannot trigger alert: no active connection");
-        return;
-    }
-
-    if (!s_ctx.chars[ITAG_CHAR_ALERT_LEVEL].present)
-    {
-        ESP_LOGW(TAG, "Cannot trigger alert: Alert Level characteristic not discovered");
-        return;
-    }
-
-    int rc = ble_gattc_write_flat(s_ctx.conn_handle,
-                                  s_ctx.chars[ITAG_CHAR_ALERT_LEVEL].value_handle,
-                                  &level,
-                                  sizeof(level),
-                                  itag_write_cb,
-                                  (void *)(uintptr_t)ITAG_CHAR_ALERT_LEVEL);
-    if (rc != 0)
-    {
-        ESP_LOGW(TAG, "Alert write failed: %d", rc);
-    }
-}
-
-void ble_manager_read_battery_level()
-{
-    if (s_ctx.conn_handle == BLE_HS_CONN_HANDLE_NONE)
-    {
-        ESP_LOGW(TAG, "Cannot read battery: no active connection");
-        return;
-    }
-
-    if (!s_ctx.chars[ITAG_CHAR_BATTERY_LEVEL].present)
-    {
-        ESP_LOGW(TAG, "Cannot read battery: Battery Level characteristic not discovered");
-        return;
-    }
-
-    int rc = ble_gattc_read_by_uuid(s_ctx.conn_handle,
-                                    s_ctx.chars[ITAG_CHAR_BATTERY_LEVEL].value_handle,
-                                    s_ctx.chars[ITAG_CHAR_BATTERY_LEVEL].value_handle,
-                                    BLE_UUID16_DECLARE(UUID_BATTERY_LEVEL),
-                                    itag_read_cb,
-                                    (void *)(uintptr_t)ITAG_CHAR_BATTERY_LEVEL);
-    if (rc != 0)
-    {
-        ESP_LOGW(TAG, "Battery read failed: %d", rc);
-    }
 }
