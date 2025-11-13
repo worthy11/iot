@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "host/ble_hs.h"
-#include "ble_utils.h"
+#include "utils.h"
 
 char *normalize_name(const uint8_t *src, size_t len)
 {

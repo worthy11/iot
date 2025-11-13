@@ -1,2 +1,13 @@
-idf_component_register(SRCS "battery_service.c" "ble_manager.c" "gap.c" "gatt_svc.c" "hardware_manager.c" "led_service.c" "main.c" "protocol_manager.c" "server_main.c" "wifi_manager.c"
-                    INCLUDE_DIRS "." "ble_drivers")
+idf_component_register(SRCS "main.c"
+                           "gatt_client/gatt_client.c"
+                           "gatt_client/manager.c"
+                           "gatt_client/utils.c"
+                           "gatt_server/gatt_server.c"
+                           "gatt_server/gap.c"
+                           "gatt_server/gatt_svc.c"
+                           "gatt_server/battery_service.c"
+                           "gatt_server/led_service.c"
+                           "hardware_manager.c"
+                           "protocol_manager.c"
+                           "wifi_manager.c"
+                    INCLUDE_DIRS "." "gatt_client" "gatt_server" "ble_drivers")

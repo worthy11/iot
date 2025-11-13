@@ -23,8 +23,8 @@
 #include "host/ble_sm.h"
 #include "host/util/util.h"
 
-#include "ble_better.h"
-#include "ble_utils.h"
+#include "manager.h"
+#include "utils.h"
 
 #define MAX_CANDIDATES 5
 static const char *TAG = "ble_manager";
@@ -287,7 +287,7 @@ static int cmd_disconnect(int argc, char **argv)
     return 0;
 }
 
-static void register_console_commands(void)
+void register_console_commands(void)
 {
     const esp_console_cmd_t cmd_battery = {
         .command = "battery",
@@ -812,5 +812,4 @@ void init_ble_manager(void)
 
     ble_svc_gap_device_name_set("esp32-ble-client");
     nimble_port_freertos_init(host_task);
-    register_console_commands();
 }
