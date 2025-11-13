@@ -14,12 +14,14 @@ static uint8_t own_addr_type;
 static uint8_t addr_val[6] = {0};
 static uint8_t esp_uri[] = {BLE_GAP_URI_PREFIX_HTTPS, '/', '/', 'e', 's', 'p', 'r', 'e', 's', 's', 'i', 'f', '.', 'c', 'o', 'm'};
 
-inline static void format_addr(char *addr_str, uint8_t addr[]) {
+inline static void format_addr(char *addr_str, uint8_t addr[])
+{
     sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X", addr[0], addr[1],
             addr[2], addr[3], addr[4], addr[5]);
 }
 
-static void print_conn_desc(struct ble_gap_conn_desc *desc) {
+static void print_conn_desc(struct ble_gap_conn_desc *desc)
+{
 
     char addr_str[18] = {0};
 
@@ -41,7 +43,8 @@ static void print_conn_desc(struct ble_gap_conn_desc *desc) {
              desc->sec_state.bonded);
 }
 
-static void start_advertising(void) {
+static void start_advertising(void)
+{
     int rc = 0;
     const char *name;
     struct ble_hs_adv_fields adv_fields = {0};
@@ -65,7 +68,8 @@ static void start_advertising(void) {
     adv_fields.le_role_is_present = 1;
 
     rc = ble_gap_adv_set_fields(&adv_fields);
-    if (rc != 0) {
+    if (rc != 0)
+    {
         ESP_LOGE(TAG, "failed to set advertising data, error code: %d", rc);
         return;
     }
@@ -81,7 +85,8 @@ static void start_advertising(void) {
     rsp_fields.adv_itvl_is_present = 1;
 
     rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
-    if (rc != 0) {
+    if (rc != 0)
+    {
         ESP_LOGE(TAG, "failed to set scan response data, error code: %d", rc);
         return;
     }
@@ -94,30 +99,34 @@ static void start_advertising(void) {
 
     rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params,
                            gap_event_handler, NULL);
-    if (rc != 0) {
+    if (rc != 0)
+    {
         ESP_LOGE(TAG, "failed to start advertising, error code: %d", rc);
         return;
     }
     ESP_LOGI(TAG, "advertising started!");
 }
 
+static int gap_event_handler(struct ble_gap_event *event, void *arg)
+{
 
-static int gap_event_handler(struct ble_gap_event *event, void *arg) {
-    
     int rc = 0;
     struct ble_gap_conn_desc desc;
 
-    switch (event->type) {
+    switch (event->type)
+    {
 
     case BLE_GAP_EVENT_CONNECT:
-       
+
         ESP_LOGI(TAG, "connection %s; status=%d",
                  event->connect.status == 0 ? "established" : "failed",
                  event->connect.status);
 
-        if (event->connect.status == 0) {
+        if (event->connect.status == 0)
+        {
             rc = ble_gap_conn_find(event->connect.conn_handle, &desc);
-            if (rc != 0) {
+            if (rc != 0)
+            {
                 ESP_LOGE(TAG,
                          "failed to find connection by handle, error code: %d",
                          rc);
@@ -132,7 +141,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
                                                 .supervision_timeout =
                                                     desc.supervision_timeout};
             rc = ble_gap_update_params(event->connect.conn_handle, &params);
-            if (rc != 0) {
+            if (rc != 0)
+            {
                 ESP_LOGE(
                     TAG,
                     "failed to update connection parameters, error code: %d",
@@ -140,7 +150,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
                 return rc;
             }
         }
-        else {
+        else
+        {
             start_advertising();
         }
         return rc;
@@ -157,7 +168,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
                  event->conn_update.status);
 
         rc = ble_gap_conn_find(event->conn_update.conn_handle, &desc);
-        if (rc != 0) {
+        if (rc != 0)
+        {
             ESP_LOGE(TAG, "failed to find connection by handle, error code: %d",
                      rc);
             return rc;
@@ -173,7 +185,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
 
     case BLE_GAP_EVENT_NOTIFY_TX:
         if ((event->notify_tx.status != 0) &&
-            (event->notify_tx.status != BLE_HS_EDONE)) {
+            (event->notify_tx.status != BLE_HS_EDONE))
+        {
             ESP_LOGI(TAG,
                      "notify event; conn_handle=%d attr_handle=%d "
                      "status=%d is_indication=%d",
@@ -204,25 +217,28 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
     return rc;
 }
 
-
-void adv_init(void) {
+void adv_init(void)
+{
     int rc = 0;
     char addr_str[18] = {0};
 
     rc = ble_hs_util_ensure_addr(0);
-    if (rc != 0) {
+    if (rc != 0)
+    {
         ESP_LOGE(TAG, "device does not have any available bt address!");
         return;
     }
 
     rc = ble_hs_id_infer_auto(0, &own_addr_type);
-    if (rc != 0) {
+    if (rc != 0)
+    {
         ESP_LOGE(TAG, "failed to infer address type, error code: %d", rc);
         return;
     }
 
     rc = ble_hs_id_copy_addr(own_addr_type, addr_val, NULL);
-    if (rc != 0) {
+    if (rc != 0)
+    {
         ESP_LOGE(TAG, "failed to copy device address, error code: %d", rc);
         return;
     }
@@ -232,13 +248,15 @@ void adv_init(void) {
     start_advertising();
 }
 
-int gap_init(void) {
+int gap_init(void)
+{
     int rc = 0;
 
     ble_svc_gap_init();
 
     rc = ble_svc_gap_device_name_set(DEVICE_NAME);
-    if (rc != 0) {
+    if (rc != 0)
+    {
         ESP_LOGE(TAG, "failed to set device name to %s, error code: %d",
                  DEVICE_NAME, rc);
         return rc;
