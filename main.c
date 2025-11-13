@@ -14,7 +14,7 @@ const char *HOST = "example.com";
 const char *PORT = "80";
 const char *PATH = "/";
 
-void app_main(void)
+void app_main_deprecated(void)
 {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
