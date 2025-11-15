@@ -10,7 +10,5 @@ idf_component_register(SRCS "main.c"
                            "hardware_manager.c"
                            "protocol_manager.c"
                            "wifi_manager.c"
-                           "mqtt_manager.c"
-                           "mqtt/app_main.c"
                     INCLUDE_DIRS "." "gatt_client" "gatt_server" "ble_drivers" "mqtt"
                     REQUIRES esp_wifi console nvs_flash driver bt mqtt)
