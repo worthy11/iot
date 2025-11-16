@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <string.h>
 #include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_mac.h"
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -14,6 +16,23 @@
 #define BROKER_URL "mqtt://10.72.5.219:1883"
 
 static const char *TAG = "MQTT_PUBLISHER";
+
+static esp_err_t get_mac_address_string(char *mac_str)
+{
+    uint8_t mac[6];
+    // Always use base MAC for consistency - device will have same ID regardless of WiFi state
+    esp_err_t ret = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get base MAC address");
+        return ret;
+    }
+
+    snprintf(mac_str, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    
+    ESP_LOGI(TAG, "Device MAC (base): %s", mac_str);
+    return ESP_OK;
+}
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -34,6 +53,16 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
 static void mqtt_app_start(void)
 {
+    char device_mac[18];
+    char topic[64];
+    char message[32];
+    
+    // Get MAC address
+    if (get_mac_address_string(device_mac) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get MAC address, aborting MQTT");
+        return;
+    }
+
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = BROKER_URL,
     };
@@ -41,11 +70,16 @@ static void mqtt_app_start(void)
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
 
-    int msg_id;
-    msg_id = esp_mqtt_client_enqueue(client, "/test/siema", "Siema", 0, 1, 0, true);
-    ESP_LOGI(TAG, "Enqueued msg_id=%d", msg_id);
+    // Create topic with MAC address: /test/{MAC}
+    snprintf(topic, sizeof(topic), "/test/%s", device_mac);
+    snprintf(message, sizeof(message), "Hello from %s", device_mac);
 
-    msg_id = esp_mqtt_client_enqueue(client, "/test/siema", "Siema ponownie", 0, 1, 0, true);
+    int msg_id;
+    msg_id = esp_mqtt_client_enqueue(client, topic, message, 0, 1, 0, true);
+    ESP_LOGI(TAG, "Enqueued msg_id=%d to topic: %s", msg_id, topic);
+
+    snprintf(message, sizeof(message), "Device %s online", device_mac);
+    msg_id = esp_mqtt_client_enqueue(client, topic, message, 0, 1, 0, true);
     ESP_LOGI(TAG, "Enqueued msg_id=%d", msg_id);
 
     esp_mqtt_client_start(client);
