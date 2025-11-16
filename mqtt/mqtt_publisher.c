@@ -20,7 +20,6 @@ static const char *TAG = "MQTT_PUBLISHER";
 static esp_err_t get_mac_address_string(char *mac_str)
 {
     uint8_t mac[6];
-    // Always use base MAC for consistency - device will have same ID regardless of WiFi state
     esp_err_t ret = esp_read_mac(mac, ESP_MAC_WIFI_STA);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get base MAC address");
@@ -30,7 +29,7 @@ static esp_err_t get_mac_address_string(char *mac_str)
     snprintf(mac_str, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     
-    ESP_LOGI(TAG, "Device MAC (base): %s", mac_str);
+    ESP_LOGI(TAG, "Aquatest MAC: %s", mac_str);
     return ESP_OK;
 }
 
@@ -55,9 +54,7 @@ static void mqtt_app_start(void)
 {
     char device_mac[18];
     char topic[64];
-    char message[32];
     
-    // Get MAC address
     if (get_mac_address_string(device_mac) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get MAC address, aborting MQTT");
         return;
@@ -70,16 +67,13 @@ static void mqtt_app_start(void)
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
 
-    // Create topic with MAC address: /test/{MAC}
     snprintf(topic, sizeof(topic), "/test/%s", device_mac);
-    snprintf(message, sizeof(message), "Hello from %s", device_mac);
 
     int msg_id;
-    msg_id = esp_mqtt_client_enqueue(client, topic, message, 0, 1, 0, true);
-    ESP_LOGI(TAG, "Enqueued msg_id=%d to topic: %s", msg_id, topic);
+    msg_id = esp_mqtt_client_enqueue(client, topic, "Siema", 0, 1, 0, true);
+    ESP_LOGI(TAG, "Enqueued msg_id=%d", msg_id);
 
-    snprintf(message, sizeof(message), "Device %s online", device_mac);
-    msg_id = esp_mqtt_client_enqueue(client, topic, message, 0, 1, 0, true);
+    msg_id = esp_mqtt_client_enqueue(client, topic, "Siema ponownie", 0, 1, 0, true);
     ESP_LOGI(TAG, "Enqueued msg_id=%d", msg_id);
 
     esp_mqtt_client_start(client);
