@@ -10,6 +10,7 @@
 
 #include "gatt_client/gatt_client.h"
 #include "gatt_server/gatt_server.h"
+#include "mqtt/mqtt_publisher.h"
 
 static const char *TAG = "main";
 
@@ -31,9 +32,14 @@ static int cmd_mode(int argc, char **argv)
         printf("Starting GATT server...\n");
         gatt_server_main();
     }
+    else if (strcmp(argv[1], "mqtt") == 0)
+    {
+        printf("Starting MQTT publisher...\n");
+        init_mqtt();
+    }
     else
     {
-        printf("Invalid mode. Use 'client' or 'server'\n");
+        printf("Invalid mode. Use 'client', 'server', or 'mqtt'\n");
         return -1;
     }
 
@@ -55,7 +61,7 @@ void app_main(void)
 
     const esp_console_cmd_t cmd_mode_cfg = {
         .command = "mode",
-        .help = "Start GATT client or server (usage: mode <client|server>)",
+        .help = "Start GATT client, server, or MQTT publisher (usage: mode <client|server|mqtt>)",
         .hint = NULL,
         .func = &cmd_mode,
     };
@@ -78,7 +84,7 @@ void app_main(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Console ready. Use 'mode client' or 'mode server' to start");
+    ESP_LOGI(TAG, "Console ready. Use 'mode client', 'mode server', or 'mode mqtt' to start");
 
     while (1)
     {
