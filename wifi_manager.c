@@ -40,8 +40,10 @@
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WAPI_PSK
 #endif
 
-#define TEMP_HARDCODED_SSID "worthy hotspot"
-#define TEMP_HARDCODED_PASS "worthy11"
+// #define TEMP_HARDCODED_SSID "worthy hotspot"
+// #define TEMP_HARDCODED_PASS "worthy11"
+#define TEMP_HARDCODED_SSID "67 41"
+#define TEMP_HARDCODED_PASS "gowno1234"
 
 static const char *TAG = "wifi_manager";
 static EventGroupHandle_t s_wifi_event_group;
