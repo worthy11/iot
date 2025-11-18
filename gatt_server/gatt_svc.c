@@ -3,6 +3,7 @@
 #include "common.h"
 #include "battery_service.h"
 #include "led_service.h"
+#include "keyboard_service.h"
 
 static const char *TAG = "gatt_svc";
 
@@ -14,6 +15,7 @@ static const ble_uuid16_t battery_svc_uuid = BLE_UUID16_INIT(0x180F);
 
 static uint16_t battery_chr_val_handle;
 static const ble_uuid16_t battery_chr_uuid = BLE_UUID16_INIT(0x2A19);
+
 
 static uint16_t battery_chr_conn_handle = 0;
 static bool battery_chr_conn_handle_inited = false;
@@ -53,6 +55,20 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
             .val_handle = &led_chr_val_handle
         },
         { 0 } 
+    }
+},
+
+{
+    .type = BLE_GATT_SVC_TYPE_PRIMARY,
+    .uuid = &keyboard_svc_uuid.u,
+    .characteristics = (struct ble_gatt_chr_def[]) {
+        {
+            .uuid = &keyboard_chr_uuid.u,
+            .access_cb = keyboard_chr_access,
+            .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+            .val_handle = &keyboard_chr_val_handle
+        },
+        { 0 }   
     }
 },
     
@@ -215,6 +231,11 @@ void gatt_svr_subscribe_cb(struct ble_gap_event *event) {
         battery_chr_conn_handle_inited = true;
         battery_ind_status = event->subscribe.cur_indicate;
     }   
+
+    if (event->subscribe.attr_handle == keyboard_chr_val_handle) {
+        keyboard_conn_handle = event->subscribe.conn_handle;
+        keyboard_notify_enabled = event->subscribe.cur_notify;
+    }
 }
 
 

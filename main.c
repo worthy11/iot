@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_console.h"
 #include "driver/uart.h"
+#include "gatt_server/keyboard_service.h"
 
 #include "gatt_client/gatt_client.h"
 #include "gatt_server/gatt_server.h"
@@ -46,6 +47,29 @@ static int cmd_mode(int argc, char **argv)
     return 0;
 }
 
+static int cmd_keyboard(int argc, char **argv)
+{
+    if (argc < 2)
+    {
+        printf("Usage: keyboard <text>\n");
+        return -1;
+    }
+
+    char buf[128] = {0};
+    int offset = 0;
+    for (int i = 1; i < argc; i++)
+    {
+        int n = snprintf(buf + offset, sizeof(buf) - offset, "%s%s", argv[i], (i + 1 < argc) ? " " : "");
+        offset += n;
+        if (offset >= sizeof(buf)) break;
+    }
+
+    keyboard_set_text(buf);
+    printf("Keyboard text set: %s\n", buf);
+
+    return 0;
+}
+
 void app_main(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -56,9 +80,6 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // esp_console_config_t console_config = ESP_CONSOLE_CONFIG_DEFAULT();
-    // ESP_ERROR_CHECK(esp_console_init(&console_config));
-
     const esp_console_cmd_t cmd_mode_cfg = {
         .command = "mode",
         .help = "Start GATT client, server, or MQTT publisher (usage: mode <client|server|mqtt>)",
@@ -66,6 +87,14 @@ void app_main(void)
         .func = &cmd_mode,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_mode_cfg));
+
+    const esp_console_cmd_t cmd_keyboard_cfg = {
+        .command = "keyboard",
+        .help = "Set text for keyboard service (usage: keyboard <text>)",
+        .hint = "<text>",
+        .func = &cmd_keyboard,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_keyboard_cfg));
 
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
