@@ -65,7 +65,7 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
         {
             .uuid = &keyboard_chr_uuid.u,
             .access_cb = keyboard_chr_access,
-            .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+            .flags = BLE_GATT_CHR_F_NOTIFY,
             .val_handle = &keyboard_chr_val_handle
         },
         { 0 }   

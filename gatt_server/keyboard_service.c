@@ -11,12 +11,13 @@ const ble_uuid16_t keyboard_svc_uuid = BLE_UUID16_INIT(0xFFF0);
 const ble_uuid16_t keyboard_chr_uuid = BLE_UUID16_INIT(0xFFF1);
 
 uint16_t keyboard_chr_val_handle;
-uint16_t keyboard_conn_handle = 0;
+uint16_t keyboard_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 bool keyboard_notify_enabled = false;
 
 #define KB_QUEUE_SIZE 5
 #define KB_BUFFER_SIZE 128
 #define KB_TASK_DELAY_MS 1000
+#define KB_PRESS_MS 200
 
 typedef struct {
     char text[KB_BUFFER_SIZE];
@@ -66,11 +67,34 @@ static void kb_task(void *arg) {
         kb_item_t *item = kb_queue_front();
         if (item) {
             if (item->read_index < item->len) {
+                uint8_t c = item->text[item->read_index];
                 item->read_index++;
 
                 if (keyboard_notify_enabled && keyboard_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-                    struct os_mbuf *om = ble_hs_mbuf_from_flat(&item->text[item->read_index - 1], 1);
-                    ble_gatts_notify_custom(keyboard_conn_handle, keyboard_chr_val_handle, om);
+                    ESP_LOGI(TAG, "kb notify: conn=%d, char=0x%02x", keyboard_conn_handle, c);
+                    struct os_mbuf *om = ble_hs_mbuf_from_flat(&c, 1);
+                    if (om == NULL) {
+                        ESP_LOGE(TAG, "failed to alloc mbuf for key press");
+                    } else {
+                        int rc = ble_gatts_notify_custom(keyboard_conn_handle, keyboard_chr_val_handle, om);
+                        if (rc != 0) {
+                            ESP_LOGE(TAG, "ble_gatts_notify_custom press rc=%d", rc);
+                        }
+                    }
+
+                    vTaskDelay(pdMS_TO_TICKS(KB_PRESS_MS));
+
+                    uint8_t release = 0;
+                    ESP_LOGI(TAG, "kb notify: conn=%d, release=0", keyboard_conn_handle);
+                    struct os_mbuf *om_release = ble_hs_mbuf_from_flat(&release, 1);
+                    if (om_release == NULL) {
+                        ESP_LOGE(TAG, "failed to alloc mbuf for key release");
+                    } else {
+                        int rc2 = ble_gatts_notify_custom(keyboard_conn_handle, keyboard_chr_val_handle, om_release);
+                        if (rc2 != 0) {
+                            ESP_LOGE(TAG, "ble_gatts_notify_custom release rc=%d", rc2);
+                        }
+                    }
                 }
             }
 
@@ -83,6 +107,7 @@ static void kb_task(void *arg) {
     }
 }
 
+
 void keyboard_set_text(const char *txt) {
     if (!kb_queue_push(txt)) {
         ESP_LOGW(TAG, "Failed to enqueue keyboard text");
@@ -93,7 +118,7 @@ void keyboard_set_text(const char *txt) {
         BaseType_t res = xTaskCreate(
             kb_task,
             "keyboard_task",
-            2048,             
+            4096,             
             NULL,
             tskIDLE_PRIORITY + 1,
             &kb_task_handle
