@@ -20,25 +20,41 @@
 
 static const char *TAG = "MQTT_PUBLISHER";
 
-static int publish_interval_sec = 5;
+static int temperature_interval_sec = 10;
+static int ph_interval_sec = 10;
 static esp_mqtt_client_handle_t g_client = NULL;
 
 static char device_mac[18];
-static char data_topic[64];
-static char cmd_topic[64];
+static char temperature_topic[48];
+static char ph_topic[48];
+static char cmd_topic[32];
 char msg[16];
-static bool publish_enabled = false;
+static bool temperature_enabled = false;
+static bool ph_enabled = false;
 
-static void publish_task(void *param)
+static void temperature_publish_task(void *param)
 {
     while (1) {
-        if (g_client != NULL && publish_enabled) {
+        if (g_client != NULL && temperature_enabled) {
             int value = (int)(esp_random() % 101);
             snprintf(msg, sizeof(msg), "%d *C", value);
-            int msg_id = esp_mqtt_client_enqueue(g_client, data_topic, msg, 0, 1, 0, true);
+            int msg_id = esp_mqtt_client_enqueue(g_client, temperature_topic, msg, 0, 1, 0, true);
             ESP_LOGI(TAG, "Enqueue -> \"%s\" msg_id=%d", msg, msg_id);
         }
-        vTaskDelay(publish_interval_sec * 1000 / portTICK_PERIOD_MS);
+        vTaskDelay(temperature_interval_sec * 1000 / portTICK_PERIOD_MS);
+    }
+}
+
+static void ph_publish_task(void *param)
+{
+    while (1) {
+        if (g_client != NULL && ph_enabled) {
+            int value = (int)(esp_random() % 15);
+            snprintf(msg, sizeof(msg), "%d", value);
+            int msg_id = esp_mqtt_client_enqueue(g_client, ph_topic, msg, 0, 1, 0, true);
+            ESP_LOGI(TAG, "Enqueue -> \"%s\" msg_id=%d", msg, msg_id);
+        }
+        vTaskDelay(ph_interval_sec * 1000 / portTICK_PERIOD_MS);
     }
 }
 
@@ -51,15 +67,24 @@ static void process_command(const char *cmd, int len)
 
     int value;
     if (sscanf(buf, "temperature %d", &value) == 1) {
-        publish_interval_sec = value;
-        ESP_LOGW(TAG, "Interval set to %d seconds", publish_interval_sec);
-        if (!publish_enabled) {
-            publish_enabled = true;
+        temperature_interval_sec = value;
+        ESP_LOGW(TAG, "Temperature interval set to %d seconds", temperature_interval_sec);
+        if (!temperature_enabled) {
+            temperature_enabled = true;
             ESP_LOGI(TAG, "Start publishing temperature data");
         }
     }
-    else if (sscanf(buf, "stop") == 1) {
-        publish_enabled = false;
+    else if (sscanf(buf, "ph %d", &value) == 1) {
+        ph_interval_sec = value;
+        ESP_LOGW(TAG, "pH interval set to %d seconds", ph_interval_sec);
+        if (!ph_enabled) {
+            ph_enabled = true;
+            ESP_LOGI(TAG, "Start publishing pH data");
+        }
+    }
+    else if (strcmp(buf, "stop") == 0) {
+        temperature_enabled = false;
+        ph_enabled = false;
         ESP_LOGI(TAG, "Publishing stopped");
     }
     else {
@@ -114,8 +139,9 @@ static void mqtt_app_start(void)
         return;
     }
 
-    snprintf(data_topic, sizeof(data_topic), "devices/%s/data/temperature", device_mac);
-    snprintf(cmd_topic, sizeof(cmd_topic),  "devices/%s/cmd", device_mac);
+    snprintf(temperature_topic, sizeof(temperature_topic), "devices/%s/data/temperature", device_mac);
+    snprintf(ph_topic, sizeof(ph_topic), "devices/%s/data/ph", device_mac);
+    snprintf(cmd_topic, sizeof(cmd_topic), "devices/%s/cmd", device_mac);
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = BROKER_URL,
@@ -125,7 +151,8 @@ static void mqtt_app_start(void)
     esp_mqtt_client_register_event(g_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(g_client);
 
-    xTaskCreate(publish_task, "publish_task", 4096, NULL, 5, NULL);
+    xTaskCreate(temperature_publish_task, "temperature_task", 4096, NULL, 5, NULL);
+    xTaskCreate(ph_publish_task, "ph_task", 4096, NULL, 5, NULL);
 }
 
 void init_mqtt(void)
