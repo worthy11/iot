@@ -1,3 +1,15 @@
 Compiler options → Optimization Level → Optimize for size (-Os)
 
 Partition Table → Partition Table → to drugie
+
+
+mosquitto -c mosquitto.conf
+
+mosquitto_sub -h 10.72.5.43 -t "#" -v
+
+mosquitto_pub -h 10.72.5.43 -t "devices/6C:C8:40:5C:63:E8/cmd" -m "temperature 10"
+
+devices/6C:C8:40:5C:63:E8/data/temperature
+devices/6C:C8:40:5C:63:E8/data/ph
+
+devices/6C:C8:40:5C:63:E8/cmd
