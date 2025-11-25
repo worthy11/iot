@@ -15,20 +15,21 @@
 #include "mqtt_client.h"
 #include "esp_crt_bundle.h"
 
-// #define BROKER_URL "mqtts://10.72.5.219:8883"
+// #define BROKER_URL "mqtt://10.72.5.219:1883"
 #define BROKER_URL "mqtt://10.72.5.43:1883"
 
 static const char *TAG = "MQTT_PUBLISHER";
+
+static const char *user_id = "f8e87394";
 
 static int temperature_interval_sec = 10;
 static int ph_interval_sec = 10;
 static esp_mqtt_client_handle_t g_client = NULL;
 
 static char device_mac[18];
-static char temperature_topic[48];
-static char ph_topic[48];
+static char temperature_topic[64];
+static char ph_topic[64];
 static char cmd_topic[32];
-char msg[16];
 static bool temperature_enabled = false;
 static bool ph_enabled = false;
 
@@ -36,6 +37,7 @@ static void temperature_publish_task(void *param)
 {
     while (1) {
         if (g_client != NULL && temperature_enabled) {
+            char msg[8];
             int value = (int)(esp_random() % 101);
             snprintf(msg, sizeof(msg), "%d *C", value);
             int msg_id = esp_mqtt_client_enqueue(g_client, temperature_topic, msg, 0, 1, 0, true);
@@ -49,6 +51,7 @@ static void ph_publish_task(void *param)
 {
     while (1) {
         if (g_client != NULL && ph_enabled) {
+            char msg[8];
             int value = (int)(esp_random() % 15);
             snprintf(msg, sizeof(msg), "%d", value);
             int msg_id = esp_mqtt_client_enqueue(g_client, ph_topic, msg, 0, 1, 0, true);
@@ -139,12 +142,13 @@ static void mqtt_app_start(void)
         return;
     }
 
-    snprintf(temperature_topic, sizeof(temperature_topic), "devices/%s/data/temperature", device_mac);
-    snprintf(ph_topic, sizeof(ph_topic), "devices/%s/data/ph", device_mac);
-    snprintf(cmd_topic, sizeof(cmd_topic), "devices/%s/cmd", device_mac);
+    snprintf(temperature_topic, sizeof(temperature_topic), "%s/%s/data/temperature", user_id, device_mac);
+    snprintf(ph_topic, sizeof(ph_topic), "%s/%s/data/ph", user_id, device_mac);
+    snprintf(cmd_topic, sizeof(cmd_topic), "%s/%s/cmd", user_id, device_mac);
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = BROKER_URL,
+        .credentials.username = user_id
     };
 
     g_client = esp_mqtt_client_init(&mqtt_cfg);

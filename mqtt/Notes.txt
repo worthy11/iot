@@ -1,17 +1,18 @@
 Compiler options → Optimization Level → Optimize for size (-Os)
 
-Partition Table → Partition Table → to drugie
+Partition Table → Partition Table → Single factory app (large), no OTA
 
 
 mosquitto -c mosquitto.conf
 
-mosquitto_sub -h 10.72.5.43 -t "#" -v
+mosquitto_sub -h 10.72.5.43 -p 1883 -u "f8e87394" -t "f8e87394/+/data/#" -v
 
-mosquitto_pub -h 10.72.5.43 -t "devices/6C:C8:40:5C:63:E8/cmd" -m "temperature 5"
-mosquitto_pub -h 10.72.5.43 -t "devices/6C:C8:40:5C:63:E8/cmd" -m "ph 5"
+mosquitto_pub -h 10.72.5.43 -p 1883 -u "f8e87394" -t "f8e87394/6C:C8:40:5C:63:E8/cmd" -m "temperature 5"
+
+mosquitto_pub -h 10.72.5.43 -p 1883 -u "f8e87394" -t "f8e87394/6C:C8:40:5C:63:E8/cmd" -m "ph 5"
 
 
-devices/6C:C8:40:5C:63:E8/data/temperature
-devices/6C:C8:40:5C:63:E8/data/ph
+f8e87394/6C:C8:40:5C:63:E8/data/temperature
+f8e87394/6C:C8:40:5C:63:E8/data/ph
 
-devices/6C:C8:40:5C:63:E8/cmd
+f8e87394/6C:C8:40:5C:63:E8/cmd
