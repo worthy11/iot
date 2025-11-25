@@ -11,6 +11,10 @@ mosquitto_pub -h 10.72.5.43 -p 1883 -u "f8e87394" -t "f8e87394/6C:C8:40:5C:63:E8
 
 mosquitto_pub -h 10.72.5.43 -p 1883 -u "f8e87394" -t "f8e87394/6C:C8:40:5C:63:E8/cmd" -m "ph 5"
 
+mosquitto_pub -h 10.72.5.43 -p 1883 -u "f8e87394" -t "f8e87394/6C:C8:40:5C:63:E8/cmd" -m "feed"
+
+mosquitto_pub -h 10.72.5.43 -p 1883 -u "f8e87394" -t "f8e87394/6C:C8:40:5C:63:E8/cmd" -m "stop"
+
 
 f8e87394/6C:C8:40:5C:63:E8/data/temperature
 f8e87394/6C:C8:40:5C:63:E8/data/ph

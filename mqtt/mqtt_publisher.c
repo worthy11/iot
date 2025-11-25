@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <time.h>
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_mac.h"
@@ -14,6 +15,7 @@
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_sntp.h"
 
 // #define BROKER_URL "mqtt://10.72.5.219:1883"
 #define BROKER_URL "mqtt://10.72.5.43:1883"
@@ -29,9 +31,11 @@ static esp_mqtt_client_handle_t g_client = NULL;
 static char device_mac[18];
 static char temperature_topic[64];
 static char ph_topic[64];
+static char feed_topic[64];
 static char cmd_topic[32];
 static bool temperature_enabled = false;
 static bool ph_enabled = false;
+static bool feed_enabled = false;
 
 static void temperature_publish_task(void *param)
 {
@@ -61,6 +65,18 @@ static void ph_publish_task(void *param)
     }
 }
 
+static void feed_task() {
+    if (g_client != NULL && feed_enabled) {
+        char msg[24];
+        time_t now = time(NULL);
+        struct tm *timeinfo = localtime(&now);
+        snprintf(msg, sizeof(msg), "feeding on at %02d:%02d:%02d", 
+                 timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+        int msg_id = esp_mqtt_client_enqueue(g_client, feed_topic, msg, 0, 1, 0, true);
+        ESP_LOGI(TAG, "Enqueue -> \"%s\" msg_id=%d", msg, msg_id);
+    }
+}
+
 static void process_command(const char *cmd, int len)
 {
     char buf[32];
@@ -84,6 +100,12 @@ static void process_command(const char *cmd, int len)
             ph_enabled = true;
             ESP_LOGI(TAG, "Start publishing pH data");
         }
+    }
+    else if (strcmp(buf, "feed") == 0) {
+        feed_enabled = true;
+        ESP_LOGI(TAG, "Feeding started");
+        feed_task();
+        feed_enabled = false;
     }
     else if (strcmp(buf, "stop") == 0) {
         temperature_enabled = false;
@@ -135,6 +157,18 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     }
 }
 
+static void initialize_sntp(void)
+{
+    ESP_LOGI(TAG, "Initializing SNTP");
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+    
+    // Set timezone to Warsaw (CET-1CEST,M3.5.0,M10.5.0/3)
+    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+    tzset();
+}
+
 static void mqtt_app_start(void)
 {
     if (get_mac_address_string(device_mac) != ESP_OK) {
@@ -144,7 +178,10 @@ static void mqtt_app_start(void)
 
     snprintf(temperature_topic, sizeof(temperature_topic), "%s/%s/data/temperature", user_id, device_mac);
     snprintf(ph_topic, sizeof(ph_topic), "%s/%s/data/ph", user_id, device_mac);
+    snprintf(feed_topic, sizeof(feed_topic), "%s/%s/data/feed", user_id, device_mac);
     snprintf(cmd_topic, sizeof(cmd_topic), "%s/%s/cmd", user_id, device_mac);
+    
+    initialize_sntp();
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = BROKER_URL,
