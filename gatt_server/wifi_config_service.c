@@ -101,7 +101,7 @@ static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
 
     ble_hs_mbuf_to_flat(om, buf, len, NULL);
     buf[len] = '\0';
-
+    
     if (ble_uuid_cmp(uuid, &WIFI_SSID_UUID.u) == 0) {
         size_t copy_len = len < (int)sizeof(s_pending_ssid) - 1 ? (size_t)len : sizeof(s_pending_ssid) - 1;
         memcpy(s_pending_ssid, buf, copy_len);
@@ -114,12 +114,19 @@ static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
         ESP_LOGI(TAG, "Password received (len=%d)", len);
     } else if (ble_uuid_cmp(uuid, &WIFI_APPLY_UUID.u) == 0) {
         if (len > 0 && buf[0] == 0x01) {
+            if(strlen(s_pending_pass)>0 && strlen(s_pending_ssid)>0)
+            {
             ESP_LOGI(TAG, " CONNECT=1 -> saving WiFi credentials");
             esp_err_t err = wifi_manager_save_credentials(s_pending_ssid, s_pending_pass);
             if (err == ESP_OK) {
                 ESP_LOGI(TAG, "WiFi credentials saved successfully. Restart to apply.");
             }
             init_wifi_manager();
+            }
+            else
+            {
+                ESP_LOGI(TAG, "SSID or Password isn't set");
+            }
         } else {
             ESP_LOGI(TAG, "connect != 1, ignored");
         }
