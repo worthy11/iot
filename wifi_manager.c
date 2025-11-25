@@ -155,6 +155,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
 void init_wifi_manager(void)
 {
+    ESP_LOGI(TAG,"init");
     s_wifi_event_group = xEventGroupCreate();
     wifi_status_event_group = xEventGroupCreate();
 

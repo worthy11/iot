@@ -8,8 +8,8 @@
 
 static const char *TAG = "WiFi_CFG_SVC";
 
-static char s_pending_ssid[8] = {0};
-static char s_pending_pass[16] = {0};
+static char s_pending_ssid[32] = {0};
+static char s_pending_pass[64] = {0};
 
 static const ble_uuid128_t WIFI_SVC_UUID   = BLE_UUID128_INIT(0xf0,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12);
 static const ble_uuid128_t WIFI_SSID_UUID  = BLE_UUID128_INIT(0xf1,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12);
@@ -19,6 +19,9 @@ static const ble_uuid128_t WIFI_APPLY_UUID = BLE_UUID128_INIT(0xf3,0xde,0xbc,0x9
 static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
                                 struct ble_gatt_access_ctxt *ctxt, void *arg);
 
+static int wifi_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
+                        struct ble_gatt_access_ctxt *ctxt, void *arg);
+                                
 static const struct ble_gatt_svc_def wifi_svc_defs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -28,23 +31,58 @@ static const struct ble_gatt_svc_def wifi_svc_defs[] = {
                 .uuid = &WIFI_SSID_UUID.u,
                 .access_cb = wifi_config_write_cb,
                 .flags = BLE_GATT_CHR_F_WRITE,
+                .descriptors = (struct ble_gatt_dsc_def[]) { //descriptory nie działają - może wina rnf na ios może nie
+                    {
+                        .uuid = BLE_UUID16_DECLARE(0x2901),
+                        .att_flags = BLE_ATT_F_READ,
+                        .min_key_size = 0,
+                        .access_cb = wifi_desc_cb,
+                        .arg = "SSID"
+                    },
+                    {0}
+                },
             },
             {
                 .uuid = &WIFI_PASS_UUID.u,
                 .access_cb = wifi_config_write_cb,
                 .flags = BLE_GATT_CHR_F_WRITE,
+                .descriptors = (struct ble_gatt_dsc_def[]) {
+                    {
+                        .uuid = BLE_UUID16_DECLARE(0x2901),
+                        .att_flags = BLE_ATT_F_READ,
+                        .min_key_size = 0,
+                        .access_cb = wifi_desc_cb,
+                        .arg = "Password"
+                    },
+                    {0}
+                },
             },
             {
                 .uuid = &WIFI_APPLY_UUID.u,
                 .access_cb = wifi_config_write_cb,
                 .flags = BLE_GATT_CHR_F_WRITE,
+                .descriptors = (struct ble_gatt_dsc_def[]) { 
+                    {
+                        .uuid = BLE_UUID16_DECLARE(0x2901),
+                        .att_flags = BLE_ATT_F_READ,
+                        .min_key_size = 0,
+                        .access_cb = wifi_desc_cb,
+                        .arg = "Apply"
+                    },
+                    {0}
+                },
             },
             {0},
         },
     },
     {0},
 };
-
+static int wifi_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
+                        struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    const char *desc = (const char *)arg;
+    return os_mbuf_append(ctxt->om, desc, strlen(desc));
+}
 static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
                                 struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -76,13 +114,14 @@ static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
         ESP_LOGI(TAG, "Password received (len=%d)", len);
     } else if (ble_uuid_cmp(uuid, &WIFI_APPLY_UUID.u) == 0) {
         if (len > 0 && buf[0] == 0x01) {
-            ESP_LOGI(TAG, "APPLY=1 -> saving WiFi credentials");
+            ESP_LOGI(TAG, " CONNECT=1 -> saving WiFi credentials");
             esp_err_t err = wifi_manager_save_credentials(s_pending_ssid, s_pending_pass);
             if (err == ESP_OK) {
                 ESP_LOGI(TAG, "WiFi credentials saved successfully. Restart to apply.");
             }
+            init_wifi_manager();
         } else {
-            ESP_LOGI(TAG, "APPLY != 1, ignored");
+            ESP_LOGI(TAG, "connect != 1, ignored");
         }
     }
 
