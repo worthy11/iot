@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WiFi Config - FAKE Icon Keys</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 500px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(to bottom, #87CEEB 0%, #4682B4 50%, #1E90FF 100%);
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+        }
+        
+        /* Fish container */
+        .fish-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 0;
+            overflow: hidden;
+        }
+        
+        /* Fish styling */
+        .fish {
+            position: absolute;
+            font-size: 60px;
+            opacity: 0.7;
+        }
+        
+        .fish:nth-child(1) {
+            top: 10%;
+            animation: swimLeftToRight 20s linear infinite;
+            animation-delay: 0s;
+            font-size: 70px;
+            left: -100px;
+        }
+        
+        .fish:nth-child(2) {
+            top: 30%;
+            animation: swimRightToLeft 25s linear infinite;
+            animation-delay: 0s;
+            font-size: 55px;
+            left: calc(100% + 100px);
+        }
+        
+        .fish:nth-child(3) {
+            top: 50%;
+            animation: swimLeftToRight 30s linear infinite;
+            animation-delay: 5s;
+            font-size: 80px;
+            left: -100px;
+        }
+        
+        .fish:nth-child(4) {
+            top: 70%;
+            animation: swimRightToLeft 22s linear infinite;
+            animation-delay: 2s;
+            font-size: 50px;
+            left: calc(100% + 100px);
+        }
+        
+        .fish:nth-child(5) {
+            top: 85%;
+            animation: swimLeftToRight 28s linear infinite;
+            animation-delay: 8s;
+            font-size: 65px;
+            left: -100px;
+        }
+        
+        @keyframes swimLeftToRight {
+            0% {
+                left: -100px;
+                transform: scaleX(-1);
+            }
+            100% {
+                left: calc(100% + 100px);
+                transform: scaleX(-1);
+            }
+        }
+        
+        @keyframes swimRightToLeft {
+            0% {
+                left: calc(100% + 100px);
+                transform: scaleX(1);
+            }
+            100% {
+                left: -100px;
+                transform: scaleX(1);
+            }
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 1;
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+        }
+        .status.success {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 12px;
+            margin: 8px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-sizing: border-box;
+            font-size: 16px;
+        }
+        button {
+            width: 100%;
+            padding: 12px;
+            margin: 8px 0;
+            background: #1976d2;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #1565c0;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        label {
+            display: block;
+            margin-top: 15px;
+            font-weight: bold;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="fish-container">
+        <div class="fish">🐟</div>
+        <div class="fish">🐠</div>
+        <div class="fish">🐡</div>
+        <div class="fish">🐟</div>
+        <div class="fish">🐠</div>
+    </div>
+    <div class="container">
+        <h1>🔧 WiFi Configuration</h1>
+        <div id="status" class="status">Ready to connect</div>
+        
+        <button id="connectBtn">Connect to Device</button>
+        
+        <div id="configForm" style="display: none;">
+            <label for="ssid">WiFi Network Name (SSID):</label>
+            <input type="text" id="ssid" placeholder="Enter WiFi network name">
+            
+            <label for="password">WiFi Password:</label>
+            <input type="password" id="password" placeholder="Enter WiFi password">
+            
+            <button id="applyBtn" onclick="applyWiFiConfig()">Apply WiFi Settings</button>
+        </div>
+    </div>
+
+    <script>
+        // WiFi Config Service UUIDs (128-bit)
+        // Note: BLE UUIDs are stored in little-endian, so bytes are reversed
+        // From ESP32: BLE_UUID128_INIT(0xf0,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12)
+        // In nRF Connect format (reversed): 12345678-1234-5678-1234-9abcdef0f1f2f3
+        const WIFI_SVC_UUID = '12345678-1234-5678-1234-56789abcdef0';
+        const WIFI_SSID_UUID = '12345678-1234-5678-1234-56789abcdef1';
+        const WIFI_PASS_UUID = '12345678-1234-5678-1234-56789abcdef2';
+        const WIFI_APPLY_UUID = '12345678-1234-5678-1234-56789abcdef3';
+
+        let device = null;
+        let server = null;
+        let wifiService = null;
+        let ssidCharacteristic = null;
+        let passCharacteristic = null;
+        let applyCharacteristic = null;
+
+        function updateStatus(message, type = 'info') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = 'status';
+            if (type === 'error') {
+                statusEl.classList.add('error');
+            } else if (type === 'success') {
+                statusEl.classList.add('success');
+            }
+        }
+
+        document.querySelector('#connectBtn').addEventListener('click', async () => {
+            try {
+                updateStatus('Scanning for devices...');
+                
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [
+                        { name: 'FAKE Icon Keys' },
+                        { namePrefix: 'FAKE' }
+                    ],
+                    optionalServices: ['battery_service', WIFI_SVC_UUID]
+                });
+
+                updateStatus('Connecting to device...');
+                server = await device.gatt.connect();
+                
+                updateStatus('Discovering services...');
+                
+                wifiService = await server.getPrimaryService(WIFI_SVC_UUID);
+                updateStatus('Getting WiFi characteristics...');
+                
+                ssidCharacteristic = await wifiService.getCharacteristic(WIFI_SSID_UUID);
+                passCharacteristic = await wifiService.getCharacteristic(WIFI_PASS_UUID);
+                applyCharacteristic = await wifiService.getCharacteristic(WIFI_APPLY_UUID);
+                
+                updateStatus('Connected! Enter WiFi credentials below.', 'success');
+                
+                document.getElementById('configForm').style.display = 'block';
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('connectBtn').textContent = 'Connected';
+                
+                device.addEventListener('gattserverdisconnected', () => {
+                    updateStatus('Device disconnected', 'error');
+                    document.getElementById('configForm').style.display = 'none';
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('connectBtn').textContent = 'Connect to Device';
+                });
+                
+            } catch (error) {
+                console.error('Connection error:', error);
+                if (error.name === 'NotFoundError') {
+                    updateStatus('Device not found. Make sure it\'s advertising.', 'error');
+                } else if (error.name === 'SecurityError') {
+                    updateStatus('Security error. Use HTTPS or localhost.', 'error');
+                } else {
+                    updateStatus(`Error: ${error.message}`, 'error');
+                }
+            }
+        });
+
+        async function applyWiFiConfig() {
+            const ssid = document.getElementById('ssid').value.trim();
+            const password = document.getElementById('password').value.trim();
+
+            if (!ssid) {
+                updateStatus('Please enter a WiFi network name', 'error');
+                return;
+            }
+
+            if (!device || !device.gatt.connected) {
+                updateStatus('Device not connected', 'error');
+                return;
+            }
+
+            try {
+                updateStatus('Sending SSID...');
+                
+                const ssidBuffer = new TextEncoder().encode(ssid);
+                const passBuffer = new TextEncoder().encode(password);
+                
+                await ssidCharacteristic.writeValue(ssidBuffer);
+                updateStatus('SSID sent. Sending password...');
+                
+                await passCharacteristic.writeValue(passBuffer);
+                updateStatus('Password sent. Applying configuration...');
+                
+                const applyBuffer = new Uint8Array([0x01]);
+                await applyCharacteristic.writeValue(applyBuffer);
+                
+                updateStatus('WiFi configuration applied! Device should connect to WiFi.', 'success');
+                
+                document.getElementById('ssid').value = '';
+                document.getElementById('password').value = '';
+                
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+                console.error('Write error:', error);
+            }
+        }
+
+        // Check if Web Bluetooth is supported
+        if (!navigator.bluetooth) {
+            updateStatus('Web Bluetooth not supported. Use Chrome/Edge on desktop or Android.', 'error');
+            document.getElementById('connectBtn').disabled = true;
+        }
+    </script>
+</body>
+</html>
+

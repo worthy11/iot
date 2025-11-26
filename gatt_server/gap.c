@@ -80,7 +80,7 @@ static void start_advertising(void)
     if (name == NULL)
     {
         ESP_LOGW(TAG, "Device name is NULL, using DEVICE_NAME directly");
-        name = DEVICE_NAME;
+    name = DEVICE_NAME;
     }
     ESP_LOGI(TAG, "Advertising device name: %s", name);
     adv_fields.name = (uint8_t *)name;
