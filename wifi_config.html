@@ -185,10 +185,6 @@
     </div>
 
     <script>
-        // WiFi Config Service UUIDs (128-bit)
-        // Note: BLE UUIDs are stored in little-endian, so bytes are reversed
-        // From ESP32: BLE_UUID128_INIT(0xf0,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12)
-        // In nRF Connect format (reversed): 12345678-1234-5678-1234-9abcdef0f1f2f3
         const WIFI_SVC_UUID = '12345678-1234-5678-1234-56789abcdef0';
         const WIFI_SSID_UUID = '12345678-1234-5678-1234-56789abcdef1';
         const WIFI_PASS_UUID = '12345678-1234-5678-1234-56789abcdef2';
@@ -221,7 +217,7 @@
                         { name: 'FAKE Icon Keys' },
                         { namePrefix: 'FAKE' }
                     ],
-                    optionalServices: ['battery_service', WIFI_SVC_UUID]
+                    optionalServices: [WIFI_SVC_UUID]
                 });
 
                 updateStatus('Connecting to device...');

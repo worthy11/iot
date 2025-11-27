@@ -6,9 +6,6 @@
 #include "hardware_manager.h"
 #include "wifi_manager.h"
 
-#define BLINK_GPIO 2
-#define BLINK_PERIOD_MS 500
-
 static const char *TAG = "hardware_manager";
 TaskHandle_t led_task_handle = NULL;
 
@@ -61,15 +58,36 @@ void init_hardware(void)
     gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(BLINK_GPIO, 0);
 
-    if (led_task_handle == NULL)
-    {
-        xTaskCreate(
-            led_blink_task,
-            "led_blink_task",
-            2048,
-            NULL,
-            5,
-            &led_task_handle);
-        ESP_LOGI(TAG, "LED blink task started");
-    }
+    // if (led_task_handle == NULL)
+    // {
+    //     xTaskCreate(
+    //         led_blink_task,
+    //         "led_blink_task",
+    //         2048,
+    //         NULL,
+    //         5,
+    //         &led_task_handle);
+    //     ESP_LOGI(TAG, "LED blink task started");
+    // }
+
+    i2c_master_bus_handle_t bus;
+    i2c_master_dev_handle_t dev;
+
+    i2c_master_bus_config_t bus_cfg = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_NUM_0,
+        .scl_io_num = OLED_SCL_GPIO,
+        .sda_io_num = OLED_SDA_GPIO,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true};
+
+    i2c_new_master_bus(&bus_cfg, &bus);
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = 0x3C,
+        .scl_speed_hz = 400000};
+
+    i2c_master_bus_add_device(bus, &dev_cfg, &dev);
+    oled_init(dev);
 }

@@ -12,6 +12,7 @@
 #include "gatt_server/gatt_server.h"
 #include "gatt_server/hid_keyboard_service.h"
 #include "mqtt/mqtt_publisher.h"
+#include "hardware_manager.h"
 
 static const char *TAG = "main";
 
@@ -339,6 +340,8 @@ void app_main(void)
     ESP_LOGI(TAG, "  appearance - Read device appearance");
     ESP_LOGI(TAG, "  ppcp - Read peripheral preferred connection parameters");
     ESP_LOGI(TAG, "  keyboard <text> - Type a message to be sent by the keyboard");
+
+    init_hardware();
     while (1)
     {
         vTaskDelay(pdMS_TO_TICKS(1000));
