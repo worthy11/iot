@@ -36,4 +36,12 @@
 
 #define OLED_CHARGE_PUMP 0x8D
 
+// Read-Modify-Write commands
+#define OLED_RMW_START 0xE0
+#define OLED_RMW_END 0xEE
+
+// Display dimensions
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 64
+
 #endif // SSD1306_COMMANDS_H
