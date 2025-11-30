@@ -2,7 +2,6 @@
 #include "common.h"
 #include "host/ble_gatt.h"
 #include "services/gatt/ble_svc_gatt.h"
-#include "hid_keyboard_service.h"
 #include "battery_service.h"
 #include "wifi_config_service.h"
 #include "esp_log.h"
@@ -17,7 +16,6 @@ static void build_combined_svc_def(void)
 {
     int i, j;
     const struct ble_gatt_svc_def *all_svc_defs[] = {
-        hid_keyboard_service_get_svc_def(),
         battery_service_get_svc_def(),
         wifi_config_service_get_svc_def(),
         NULL};
@@ -43,16 +41,12 @@ static void build_combined_svc_def(void)
 
 void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg)
 {
-    /* Forward to service-specific callbacks */
-    hid_keyboard_service_register_cb(ctxt, arg);
     battery_service_register_cb(ctxt, arg);
     wifi_config_service_register_cb(ctxt, arg);
 }
 
 void gatt_svr_subscribe_cb(struct ble_gap_event *event)
 {
-    /* Forward to service-specific callbacks */
-    hid_keyboard_service_subscribe_cb(event);
     battery_service_subscribe_cb(event);
     wifi_config_service_subscribe_cb(event);
 }
@@ -60,14 +54,6 @@ void gatt_svr_subscribe_cb(struct ble_gap_event *event)
 int gatt_svc_init(void)
 {
     int rc;
-
-    /* Initialize individual services */
-    rc = hid_keyboard_service_init();
-    if (rc != 0)
-    {
-        ESP_LOGE(TAG, "Failed to initialize HID keyboard service: %d", rc);
-        return rc;
-    }
 
     rc = battery_service_init();
     if (rc != 0)
@@ -107,9 +93,4 @@ int gatt_svc_init(void)
 
     ESP_LOGI(TAG, "GATT server initialized with %d services", gatt_svr_svcs_count);
     return 0;
-}
-
-int gatt_svr_send_keyboard_report(uint8_t modifiers, uint8_t *key_codes, uint8_t key_count)
-{
-    return hid_keyboard_service_send_report(modifiers, key_codes, key_count);
 }

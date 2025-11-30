@@ -87,7 +87,7 @@ void init_hardware(void)
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = 0x3C,
-        .scl_speed_hz = 400000};
+        .scl_speed_hz = 50000};
 
     i2c_master_bus_add_device(bus, &dev_cfg, &dev);
     oled_init(dev);

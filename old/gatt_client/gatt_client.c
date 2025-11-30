@@ -21,7 +21,7 @@
 #include "keyboard_simulator.h"
 
 static const char *tag = "NimBLE_BLE_CENT";
-static const char *target_device_name = "fakeiconkeys";
+static const char *target_device_name = "popicon";
 
 static const ble_uuid16_t gap_svc_uuid = BLE_UUID16_INIT(0x1800);
 static const ble_uuid16_t battery_svc_uuid = BLE_UUID16_INIT(0x180F);

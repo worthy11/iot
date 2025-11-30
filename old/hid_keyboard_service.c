@@ -455,8 +455,8 @@ bool keyboard_notify_enabled = false;
 
 #define KB_QUEUE_SIZE 5
 #define KB_BUFFER_SIZE 128
-#define KB_TASK_DELAY_MS 500
-#define KB_PRESS_MS 200
+#define KB_TASK_DELAY_MS 1
+#define KB_PRESS_MS 5
 
 typedef struct
 {
@@ -699,7 +699,7 @@ static void kb_task(void *arg)
                         }
 
                         /* Wait before releasing */
-                        vTaskDelay(pdMS_TO_TICKS(KB_PRESS_MS));
+                        vTaskDelay(pdMS_TO_TICKS(15));
 
                         /* Send key release (empty report) */
                         uint8_t empty_keys[6] = {0};
@@ -718,7 +718,7 @@ static void kb_task(void *arg)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(KB_TASK_DELAY_MS));
+        vTaskDelay(pdMS_TO_TICKS(15));
     }
 }
 
