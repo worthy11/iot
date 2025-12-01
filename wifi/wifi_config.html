@@ -214,8 +214,7 @@
                 
                 device = await navigator.bluetooth.requestDevice({
                     filters: [
-                        { name: 'FAKE Icon Keys' },
-                        { namePrefix: 'FAKE' }
+                        { name: 'AquaTest' },
                     ],
                     optionalServices: [WIFI_SVC_UUID]
                 });

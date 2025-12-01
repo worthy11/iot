@@ -21,6 +21,6 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 
-#define DEVICE_NAME "FAKE Icon Keys"
+#define DEVICE_NAME "AquaTest"
 
 #endif

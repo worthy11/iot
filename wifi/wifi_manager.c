@@ -7,7 +7,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "wifi_manager.h"
-#include "hardware_manager.h"
+#include "event_manager.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -42,11 +42,6 @@
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WAPI_PSK
 #endif
 
-// #define TEMP_HARDCODED_SSID "worthy hotspot"
-// #define TEMP_HARDCODED_PASS "worthy11"
-#define TEMP_HARDCODED_SSID "67 41"
-#define TEMP_HARDCODED_PASS "gowno1234"
-
 static const char *TAG = "wifi_manager";
 static EventGroupHandle_t s_wifi_event_group;
 EventGroupHandle_t wifi_status_event_group = NULL;
@@ -55,24 +50,28 @@ static bool s_wifi_connected = false;
 /* Simple NVS-based WiFi config storage */
 #define WIFI_CONFIG_NAMESPACE "wifi_cfg"
 
-typedef struct {
+typedef struct
+{
     char ssid[32];
     char password[64];
 } app_wifi_config_t;
 
 static esp_err_t wifi_config_load(app_wifi_config_t *out_cfg)
 {
-    if (!out_cfg) return ESP_ERR_INVALID_ARG;
+    if (!out_cfg)
+        return ESP_ERR_INVALID_ARG;
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(WIFI_CONFIG_NAMESPACE, NVS_READONLY, &handle);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK)
+        return err;
 
     size_t ssid_len = sizeof(out_cfg->ssid);
     size_t pass_len = sizeof(out_cfg->password);
 
     err = nvs_get_str(handle, "ssid", out_cfg->ssid, &ssid_len);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         nvs_close(handle);
         return err;
     }
@@ -84,28 +83,35 @@ static esp_err_t wifi_config_load(app_wifi_config_t *out_cfg)
 
 static bool wifi_config_is_valid(const app_wifi_config_t *cfg)
 {
-    if (!cfg) return false;
-    if (cfg->ssid[0] == '\0') return false;
-    if (strlen(cfg->password) < 8) return false;
+    if (!cfg)
+        return false;
+    if (cfg->ssid[0] == '\0')
+        return false;
+    if (strlen(cfg->password) < 8)
+        return false;
     return true;
 }
 
 static esp_err_t wifi_config_save(const app_wifi_config_t *cfg)
 {
-    if (!cfg) return ESP_ERR_INVALID_ARG;
+    if (!cfg)
+        return ESP_ERR_INVALID_ARG;
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(WIFI_CONFIG_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK)
+        return err;
 
     err = nvs_set_str(handle, "ssid", cfg->ssid);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         nvs_close(handle);
         return err;
     }
 
     err = nvs_set_str(handle, "pass", cfg->password);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         nvs_close(handle);
         return err;
     }
@@ -130,10 +136,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         }
         s_wifi_connected = false;
         ESP_LOGI(TAG, "WiFi disconnected. Retrying connection to the AP");
-        if (led_task_handle != NULL)
-        {
-            xTaskNotify(led_task_handle, 1, eSetValueWithOverwrite);
-        }
+
+        // Post WiFi disconnected event to centralized event system
+        event_manager_clear_bits(EVENT_BIT_WIFI_STATUS);
+
         esp_wifi_connect();
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
@@ -146,16 +152,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         {
             xEventGroupSetBits(wifi_status_event_group, WIFI_STATUS_BIT);
         }
-        if (led_task_handle != NULL)
-        {
-            xTaskNotify(led_task_handle, 1, eSetValueWithOverwrite);
-        }
+
+        // Post WiFi connected event to centralized event system
+        event_manager_set_bits(EVENT_BIT_WIFI_STATUS);
     }
 }
 
 void init_wifi_manager(void)
 {
-    ESP_LOGI(TAG,"init");
+    ESP_LOGI(TAG, "init");
     s_wifi_event_group = xEventGroupCreate();
     wifi_status_event_group = xEventGroupCreate();
 
@@ -188,8 +193,8 @@ void init_wifi_manager(void)
         },
     };
 
-    const char *ssid = use_stored ? stored_cfg.ssid : TEMP_HARDCODED_SSID;
-    const char *pass = use_stored ? stored_cfg.password : TEMP_HARDCODED_PASS;
+    const char *ssid = use_stored ? stored_cfg.ssid : "";
+    const char *pass = use_stored ? stored_cfg.password : "";
 
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password) - 1);
@@ -198,7 +203,6 @@ void init_wifi_manager(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
     ESP_LOGI(TAG, "WiFi init finished. Connected to AP.");
 }
 
@@ -210,7 +214,8 @@ bool wifi_manager_is_connected(void)
 /* Public function to save WiFi credentials to NVS - for testing/BLE use */
 esp_err_t wifi_manager_save_credentials(const char *ssid, const char *password)
 {
-    if (!ssid || !password) {
+    if (!ssid || !password)
+    {
         ESP_LOGE(TAG, "Invalid SSID or password");
         return ESP_ERR_INVALID_ARG;
     }
@@ -219,15 +224,19 @@ esp_err_t wifi_manager_save_credentials(const char *ssid, const char *password)
     strncpy(cfg.ssid, ssid, sizeof(cfg.ssid) - 1);
     strncpy(cfg.password, password, sizeof(cfg.password) - 1);
 
-    if (!wifi_config_is_valid(&cfg)) {
+    if (!wifi_config_is_valid(&cfg))
+    {
         ESP_LOGE(TAG, "WiFi config validation failed (ssid='%s')", ssid);
         return ESP_ERR_INVALID_ARG;
     }
 
     esp_err_t err = wifi_config_save(&cfg);
-    if (err == ESP_OK) {
+    if (err == ESP_OK)
+    {
         ESP_LOGI(TAG, "WiFi credentials saved to NVS: ssid='%s'", ssid);
-    } else {
+    }
+    else
+    {
         ESP_LOGE(TAG, "Failed to save WiFi credentials: %s", esp_err_to_name(err));
     }
     return err;

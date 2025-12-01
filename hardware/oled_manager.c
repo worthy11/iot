@@ -130,7 +130,6 @@ void oled_set_position(uint8_t row, uint8_t col)
 
 void oled_draw_char(char c, uint8_t font_size, uint16_t rotation)
 {
-
     if (font_size < 1)
         font_size = 1;
     else if (font_size > 2)
@@ -144,57 +143,6 @@ void oled_draw_char(char c, uint8_t font_size, uint16_t rotation)
     uint8_t base_size = 8 * font_size;
     uint8_t char_width = base_size;
     uint8_t char_height = base_size;
-
-    if (rotation == 0)
-    {
-        if (cursor_col + char_width > OLED_WIDTH)
-        {
-            cursor_col = 0;
-            cursor_row += char_height;
-            if (cursor_row >= OLED_HEIGHT)
-            {
-                cursor_row = (OLED_HEIGHT > char_height) ? OLED_HEIGHT - char_height : 0;
-            }
-        }
-    }
-    else if (rotation == 90)
-    {
-        if (cursor_row + char_height > OLED_HEIGHT)
-        {
-            cursor_row = 0;
-            if (cursor_col >= char_width)
-                cursor_col -= char_width;
-            else
-                cursor_col = 0;
-            if (cursor_col + char_width > OLED_WIDTH)
-            {
-                cursor_col = 0;
-            }
-        }
-    }
-    else if (rotation == 180)
-    {
-        if (cursor_col < char_width)
-        {
-            cursor_col = OLED_WIDTH - char_width;
-            if (cursor_row >= char_height)
-                cursor_row -= char_height;
-            else
-                cursor_row = (OLED_HEIGHT > char_height) ? OLED_HEIGHT - char_height : 0;
-        }
-    }
-    else if (rotation == 270)
-    {
-        if (cursor_row < char_height)
-        {
-            cursor_row = (OLED_HEIGHT >= char_height) ? OLED_HEIGHT - char_height : 0;
-            cursor_col += char_width;
-            if (cursor_col + char_width > OLED_WIDTH)
-            {
-                cursor_col = 0;
-            }
-        }
-    }
 
     const uint8_t *font_data = (const uint8_t *)font8x8_basic[char_code];
     uint8_t start_page = (cursor_row >> 3) & 0x07;
@@ -272,22 +220,43 @@ void oled_draw_char(char c, uint8_t font_size, uint16_t rotation)
 
     if (rotation == 0)
     {
-        cursor_col += char_width;
+        if (cursor_col + char_width < OLED_WIDTH)
+            cursor_col += char_width;
+        else
+        {
+            cursor_col = 0;
+            cursor_row = cursor_row < OLED_HEIGHT - char_height ? cursor_row + 1 : 0;
+        }
     }
     else if (rotation == 90)
     {
-        cursor_row += char_height;
+        if (cursor_row + char_width < OLED_HEIGHT)
+            cursor_row += char_width;
+        else
+        {
+            cursor_row = 0;
+            cursor_col = cursor_col >= char_height ? cursor_col - char_height : OLED_WIDTH - char_height;
+        }
     }
     else if (rotation == 180)
     {
         if (cursor_col >= char_width)
             cursor_col -= char_width;
         else
-            cursor_col = 0;
+        {
+            cursor_col = OLED_WIDTH - char_width;
+            cursor_row = cursor_row >= char_height ? cursor_row - char_height : OLED_HEIGHT - char_height;
+        }
     }
     else if (rotation == 270)
     {
-        cursor_row -= char_height;
+        if (cursor_row >= char_width)
+            cursor_row -= char_width;
+        else
+        {
+            cursor_row = OLED_HEIGHT - char_width;
+            cursor_col = cursor_col < OLED_WIDTH - char_height ? cursor_col + char_height : 0;
+        }
     }
 }
 
@@ -328,31 +297,31 @@ void oled_scroll_diagonal(bool direction, uint8_t start_page, uint8_t end_page, 
     end_page &= 0x07;
     vertical_offset &= 0x3F; // Clamp to 6 bits (0-63 rows)
 
-    uint8_t fixed_rows_top = start_page * 8;
-    uint8_t scroll_rows = (end_page - start_page + 1) * 8;
-    uint8_t fixed_rows_bottom = OLED_HEIGHT - fixed_rows_top - scroll_rows;
-
+    // Set vertical scroll area: fixed top = 0, scroll rows = HEIGHT, fixed bottom = 0
+    // Based on Adafruit library pattern: SET_VERTICAL_SCROLL_AREA, 0x00, HEIGHT
+    // Note: The third parameter (fixed bottom) is implicit/calculated, but datasheet shows 3 params
     uint8_t scroll_area[] = {
         OLED_SET_VERTICAL_SCROLL_AREA,
-        fixed_rows_top & 0x3F,   // Fixed rows at top (0-63)
-        scroll_rows & 0x3F,      // Scroll rows (0-63)
-        fixed_rows_bottom & 0x3F // Fixed rows at bottom (0-63)
+        0x00,       // Fixed rows at top (0)
+        OLED_HEIGHT // Scroll rows (full display height)
+        // Fixed rows at bottom = 0 (implicit, total = HEIGHT)
     };
     oled_write(scroll_area, true);
 
+    // Diagonal scroll command sequence
+    // Based on Adafruit library pattern:
+    // VERTICAL_SCROLL_CMD, 0x00, start, 0x00, stop, vertical_offset, ACTIVATE_SCROLL
     uint8_t scroll_cmd = direction ? OLED_VERTICAL_RIGHT_SCROLL : OLED_VERTICAL_LEFT_SCROLL;
     uint8_t scroll_setup[] = {
-        scroll_cmd,     // 29h or 2Ah - Command byte
-        0x00,           // A[7:0] - Dummy byte
-        start_page,     // B[2:0] - Start page address
-        0x07,           // C[2:0] - Time interval (111b = 2 frames, fastest)
-        end_page,       // D[2:0] - End page address
-        vertical_offset // E[5:0] - Vertical scrolling offset (rows)
+        scroll_cmd,          // 29h or 2Ah - Command byte
+        0x00,                // Dummy byte
+        start_page,          // Start page address
+        0x00,                // Time interval (0x00 in Adafruit)
+        end_page,            // End page address
+        vertical_offset,     // Vertical scrolling offset (rows, typically 0x01)
+        OLED_ACTIVATE_SCROLL // Activate scroll (sent together with offset in Adafruit)
     };
     oled_write(scroll_setup, true);
-
-    uint8_t activate_cmd[] = {OLED_ACTIVATE_SCROLL};
-    oled_write(activate_cmd, true);
 
     scroll_active = true;
     scroll_type = SCROLL_DIAGONAL;
@@ -436,34 +405,44 @@ void oled_init(i2c_master_dev_handle_t dev)
 
     i2c_master_transmit(dev, init_seq, sizeof(init_seq), -1);
 
+    uint8_t font_size = 1;
     while (1)
     {
+        font_size = 1;
         oled_clear_display();
         oled_set_position(0, 0);
-        oled_draw_string("AquaTest", 1, 0);
-        oled_set_position(OLED_HEIGHT - 9, OLED_WIDTH - 9);
-        oled_draw_string("AquaTest", 1, 180);
+        oled_draw_string("AquaTest", font_size, 0);
+        oled_set_position(OLED_HEIGHT - font_size * 8, OLED_WIDTH - font_size * 8);
+        oled_draw_string("AquaTest", font_size, 180);
         vTaskDelay(pdMS_TO_TICKS(2000));
 
+        font_size = 2;
         oled_clear_display();
         oled_set_position(0, 0);
-        oled_draw_string("AquaTest", 2, 0);
-        oled_set_position(OLED_HEIGHT - 17, OLED_WIDTH - 17);
-        oled_draw_string("AquaTest", 2, 180);
+        oled_draw_string("AquaTest", font_size, 0);
+        oled_set_position(OLED_HEIGHT - font_size * 8, OLED_WIDTH - font_size * 8);
+        oled_draw_string("AquaTest", font_size, 180);
         vTaskDelay(pdMS_TO_TICKS(2000));
 
+        font_size = 1;
         oled_clear_display();
-        oled_set_position(0, OLED_WIDTH - 9);
-        oled_draw_string("AquaTest", 1, 90);
-        oled_set_position(OLED_HEIGHT - 9, 0);
-        oled_draw_string("AquaTest", 1, 270);
+        oled_set_position(0, OLED_WIDTH - font_size * 8);
+        oled_draw_string("AquaTest", font_size, 90);
+        oled_set_position(OLED_HEIGHT - font_size * 8, 0);
+        oled_draw_string("AquaTest", font_size, 270);
         vTaskDelay(pdMS_TO_TICKS(2000));
 
+        font_size = 2;
         oled_clear_display();
-        oled_set_position(0, OLED_WIDTH - 17);
-        oled_draw_string("AquaTest", 2, 90);
-        oled_set_position(OLED_HEIGHT - 17, 0);
-        oled_draw_string("AquaTest", 2, 270);
+        oled_set_position(0, OLED_WIDTH - font_size * 8);
+        oled_draw_string("AquaTest", font_size, 90);
+        oled_set_position(OLED_HEIGHT - font_size * 8, 0);
+        oled_draw_string("AquaTest", font_size, 270);
         vTaskDelay(pdMS_TO_TICKS(2000));
+
+        oled_scroll_diagonal(1, 0, 7, 1);
+        vTaskDelay(pdMS_TO_TICKS(4000));
+        oled_scroll_diagonal(0, 0, 7, 1);
+        vTaskDelay(pdMS_TO_TICKS(4000));
     }
 }

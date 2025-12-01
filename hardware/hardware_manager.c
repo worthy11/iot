@@ -6,6 +6,7 @@
 
 #include "hardware_manager.h"
 #include "wifi_manager.h"
+#include "event_manager.h"
 
 static const char *TAG = "hardware_manager";
 TaskHandle_t led_task_handle = NULL;
@@ -13,19 +14,13 @@ TaskHandle_t led_task_handle = NULL;
 static void led_blink_task(void *pvParameters)
 {
     uint32_t notification = 0;
-
     led_task_handle = xTaskGetCurrentTaskHandle();
+    event_manager_register_notification(led_task_handle, EVENT_BIT_WIFI_STATUS);
 
     while (1)
     {
-        if (wifi_status_event_group == NULL)
-        {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
-        EventBits_t bits = xEventGroupGetBits(wifi_status_event_group);
-        if (!(bits & WIFI_STATUS_BIT))
+        EventBits_t bits = event_manager_get_bits();
+        if (!(bits & EVENT_BIT_WIFI_STATUS))
         {
             gpio_set_level(BLINK_GPIO, 1);
             xTaskNotifyWait(0, UINT32_MAX, &notification, pdMS_TO_TICKS(BLINK_PERIOD_MS));
@@ -59,17 +54,17 @@ void init_hardware(void)
     gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(BLINK_GPIO, 0);
 
-    // if (led_task_handle == NULL)
-    // {
-    //     xTaskCreate(
-    //         led_blink_task,
-    //         "led_blink_task",
-    //         2048,
-    //         NULL,
-    //         5,
-    //         &led_task_handle);
-    //     ESP_LOGI(TAG, "LED blink task started");
-    // }
+    if (led_task_handle == NULL)
+    {
+        xTaskCreate(
+            led_blink_task,
+            "led_blink_task",
+            2048,
+            NULL,
+            5,
+            &led_task_handle);
+        ESP_LOGI(TAG, "LED blink task started");
+    }
 
     i2c_master_bus_handle_t bus;
     i2c_master_dev_handle_t dev;

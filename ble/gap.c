@@ -19,7 +19,6 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg);
 /* Private variables */
 static uint8_t own_addr_type;
 static uint8_t addr_val[6] = {0};
-static uint8_t esp_uri[] = {BLE_GAP_URI_PREFIX_HTTPS, '/', '/', 'e', 's', 'p', 'r', 'e', 's', 's', 'i', 'f', '.', 'c', 'o', 'm'};
 
 /* Private functions */
 inline static void format_addr(char *addr_str, uint8_t addr[])
@@ -63,16 +62,15 @@ static void start_advertising(void)
     struct ble_hs_adv_fields adv_fields = {0};
     struct ble_hs_adv_fields rsp_fields = {0};
     struct ble_gap_adv_params adv_params = {0};
-    /* Service UUIDs to advertise: HID Service (0x1812) and vendor service (0xFD72) */
+    /* Service UUIDs to advertise: Battery Service (0x180F) and custom WiFi Config Service */
     static const ble_uuid16_t adv_uuids16[] = {
-        BLE_UUID16_INIT(0x1812),
-        BLE_UUID16_INIT(0xFD72)};
+        BLE_UUID16_INIT(0x180F)};
 
     /* Set advertising flags */
     adv_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
 
-    /* Set device appearance - Keyboard (HID subtype) = 0x03C1 */
-    adv_fields.appearance = 0x03C1;
+    /* Set device appearance - Generic (0x0000) or remove appearance field */
+    adv_fields.appearance = 0x0000;
     adv_fields.appearance_is_present = 1;
 
     /* Set device name in main advertising data (so clients can see it without scan response) */
@@ -80,7 +78,7 @@ static void start_advertising(void)
     if (name == NULL)
     {
         ESP_LOGW(TAG, "Device name is NULL, using DEVICE_NAME directly");
-    name = DEVICE_NAME;
+        name = DEVICE_NAME;
     }
     ESP_LOGI(TAG, "Advertising device name: %s", name);
     adv_fields.name = (uint8_t *)name;
