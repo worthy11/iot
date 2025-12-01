@@ -14,6 +14,12 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_STATUS_BIT BIT0
 
+/* Define WiFi config struct early so it is known before global usage */
+typedef struct {
+    char ssid[32];
+    char password[64];
+} app_wifi_config_t;
+
 #if CONFIG_ESP_WPA3_SAE_PWE_HUNT_AND_PECK
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_HUNT_AND_PECK
 #define EXAMPLE_H2E_IDENTIFIER ""
@@ -46,15 +52,14 @@ static const char *TAG = "wifi_manager";
 static EventGroupHandle_t s_wifi_event_group;
 EventGroupHandle_t wifi_status_event_group = NULL;
 static bool s_wifi_connected = false;
+static bool s_wifi_core_initialized = false; // tracks one-time network/event loop init
+static app_wifi_config_t g_current_cfg = {0};
+static bool g_current_cfg_valid = false; // true when we have a loaded/saved config
 
 /* Simple NVS-based WiFi config storage */
 #define WIFI_CONFIG_NAMESPACE "wifi_cfg"
 
-typedef struct
-{
-    char ssid[32];
-    char password[64];
-} app_wifi_config_t;
+
 
 static esp_err_t wifi_config_load(app_wifi_config_t *out_cfg)
 {
@@ -86,8 +91,6 @@ static bool wifi_config_is_valid(const app_wifi_config_t *cfg)
     if (!cfg)
         return false;
     if (cfg->ssid[0] == '\0')
-        return false;
-    if (strlen(cfg->password) < 8)
         return false;
     return true;
 }
@@ -135,7 +138,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             xEventGroupClearBits(wifi_status_event_group, WIFI_STATUS_BIT);
         }
         s_wifi_connected = false;
-        ESP_LOGI(TAG, "WiFi disconnected. Retrying connection to the AP");
+        ESP_LOGI(TAG, "WiFi disconnected. Retrying connection to the AP ssid='%s'", g_current_cfg_valid ? g_current_cfg.ssid : "(unknown)");
 
         // Post WiFi disconnected event to centralized event system
         event_manager_clear_bits(EVENT_BIT_WIFI_STATUS);
@@ -160,29 +163,42 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
 void init_wifi_manager(void)
 {
-    ESP_LOGI(TAG, "init");
-    s_wifi_event_group = xEventGroupCreate();
-    wifi_status_event_group = xEventGroupCreate();
+    if (!s_wifi_core_initialized)
+    {
+        ESP_LOGI(TAG, "core init");
+        s_wifi_event_group = xEventGroupCreate();
+        wifi_status_event_group = xEventGroupCreate();
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-    ESP_ERROR_CHECK(esp_wifi_init(&(wifi_init_config_t)WIFI_INIT_CONFIG_DEFAULT()));
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        esp_netif_create_default_wifi_sta();
 
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+        ESP_ERROR_CHECK(esp_wifi_init(&(wifi_init_config_t)WIFI_INIT_CONFIG_DEFAULT()));
 
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+
+        s_wifi_core_initialized = true;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "reconfigure");
+    }
+
+    // Load stored credentials (if valid) for (re)configuration
     app_wifi_config_t stored_cfg = {0};
     bool use_stored = false;
-
     if (wifi_config_load(&stored_cfg) == ESP_OK && wifi_config_is_valid(&stored_cfg))
     {
         use_stored = true;
         ESP_LOGI(TAG, "Using WiFi config from NVS: ssid='%s'", stored_cfg.ssid);
+        g_current_cfg = stored_cfg;
+        g_current_cfg_valid = true;
     }
     else
     {
-        ESP_LOGW(TAG, "No valid WiFi config in NVS, falling back to hardcoded credentials");
+        ESP_LOGW(TAG, "No valid WiFi config in NVS; WiFi will start with empty credentials (no connect)");
+        g_current_cfg_valid = false;
     }
 
     wifi_config_t wifi_config = {
@@ -199,16 +215,33 @@ void init_wifi_manager(void)
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password) - 1);
 
+    // On reconfigure, stop before applying new config
+    if (s_wifi_core_initialized)
+    {
+        esp_wifi_stop();
+    }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi init finished. Connected to AP.");
+    if (use_stored)
+    {
+        ESP_LOGI(TAG, "WiFi (re)start complete; attempting connection");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "WiFi started without credentials; waiting for provisioning");
+    }
 }
 
 bool wifi_manager_is_connected(void)
 {
     return s_wifi_connected;
+}
+
+const char *wifi_manager_get_current_ssid(void)
+{
+    return g_current_cfg_valid ? g_current_cfg.ssid : NULL;
 }
 
 /* Public function to save WiFi credentials to NVS - for testing/BLE use */
@@ -234,6 +267,8 @@ esp_err_t wifi_manager_save_credentials(const char *ssid, const char *password)
     if (err == ESP_OK)
     {
         ESP_LOGI(TAG, "WiFi credentials saved to NVS: ssid='%s'", ssid);
+        g_current_cfg = cfg;
+        g_current_cfg_valid = true;
     }
     else
     {

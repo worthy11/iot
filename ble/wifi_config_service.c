@@ -101,15 +101,20 @@ static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
     {
         if (len > 0 && buf[0] == 0x01)
         {
-            if (strlen(s_pending_pass) > 0 && strlen(s_pending_ssid) > 0)
+            const char *current_ssid = wifi_manager_get_current_ssid();
+            const char *ssid_to_use = (strlen(s_pending_ssid) > 0) ? s_pending_ssid : current_ssid;
+
+            if (strlen(s_pending_pass) > 0 && ssid_to_use && strlen(ssid_to_use) > 0)
             {
                 ESP_LOGI(TAG, " CONNECT=1 -> saving WiFi credentials");
-                esp_err_t err = wifi_manager_save_credentials(s_pending_ssid, s_pending_pass);
+                esp_err_t err = wifi_manager_save_credentials(ssid_to_use, s_pending_pass);
                 if (err == ESP_OK)
                 {
                     ESP_LOGI(TAG, "WiFi credentials saved successfully. Restart to apply.");
                 }
                 init_wifi_manager();
+                memset(s_pending_ssid, 0, sizeof(s_pending_ssid));
+                memset(s_pending_pass, 0, sizeof(s_pending_pass));
             }
             else
             {
