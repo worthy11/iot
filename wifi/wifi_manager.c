@@ -14,39 +14,15 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_STATUS_BIT BIT0
 
-/* Define WiFi config struct early so it is known before global usage */
-typedef struct {
+typedef struct
+{
     char ssid[32];
     char password[64];
 } app_wifi_config_t;
 
-#if CONFIG_ESP_WPA3_SAE_PWE_HUNT_AND_PECK
-#define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_HUNT_AND_PECK
-#define EXAMPLE_H2E_IDENTIFIER ""
-#elif CONFIG_ESP_WPA3_SAE_PWE_HASH_TO_ELEMENT
-#define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_HASH_TO_ELEMENT
-#define EXAMPLE_H2E_IDENTIFIER CONFIG_ESP_WIFI_PW_ID
-#elif CONFIG_ESP_WPA3_SAE_PWE_BOTH
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_BOTH
 #define EXAMPLE_H2E_IDENTIFIER CONFIG_ESP_WIFI_PW_ID
-#endif
-#if CONFIG_ESP_WIFI_AUTH_OPEN
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_OPEN
-#elif CONFIG_ESP_WIFI_AUTH_WEP
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WEP
-#elif CONFIG_ESP_WIFI_AUTH_WPA_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WPA2_PSK
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WPA_WPA2_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA_WPA2_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WPA3_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA3_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WPA2_WPA3_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_WPA3_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WAPI_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WAPI_PSK
-#endif
 
 static const char *TAG = "wifi_manager";
 static EventGroupHandle_t s_wifi_event_group;
@@ -56,10 +32,7 @@ static bool s_wifi_core_initialized = false; // tracks one-time network/event lo
 static app_wifi_config_t g_current_cfg = {0};
 static bool g_current_cfg_valid = false; // true when we have a loaded/saved config
 
-/* Simple NVS-based WiFi config storage */
 #define WIFI_CONFIG_NAMESPACE "wifi_cfg"
-
-
 
 static esp_err_t wifi_config_load(app_wifi_config_t *out_cfg)
 {
@@ -185,7 +158,6 @@ void init_wifi_manager(void)
         ESP_LOGI(TAG, "reconfigure");
     }
 
-    // Load stored credentials (if valid) for (re)configuration
     app_wifi_config_t stored_cfg = {0};
     bool use_stored = false;
     if (wifi_config_load(&stored_cfg) == ESP_OK && wifi_config_is_valid(&stored_cfg))
@@ -244,7 +216,6 @@ const char *wifi_manager_get_current_ssid(void)
     return g_current_cfg_valid ? g_current_cfg.ssid : NULL;
 }
 
-/* Public function to save WiFi credentials to NVS - for testing/BLE use */
 esp_err_t wifi_manager_save_credentials(const char *ssid, const char *password)
 {
     if (!ssid || !password)

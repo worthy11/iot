@@ -15,7 +15,7 @@ idf_component_register(SRCS "main.c"
                            "hardware/beam_driver.c"
                            "hardware/button_driver.c"
                            "hardware/motor_driver.c"
-                           "hardware/oled_manager.c"
+                           "hardware/ssd1306.c"
                            "hardware/ph_sensor_driver.c"
                            "hardware/temp_sensor_driver.c"
                            

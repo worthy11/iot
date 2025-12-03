@@ -83,7 +83,7 @@ void app_main(void)
 
     event_manager_init();
     init_wifi_manager();
-    start_gatt_server();
+    gatt_server_manager_init(); // Initialize GATT server manager (waits for button press)
     init_hardware();
 
     // while (1)

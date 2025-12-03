@@ -176,9 +176,12 @@
         <div id="configForm" style="display: none;">
             <label for="ssid">WiFi Network Name (SSID):</label>
             <input type="text" id="ssid" placeholder="Enter WiFi network name">
+            <button id="setSsidBtn" onclick="setSSID()">Set SSID</button>
+            <button id="readSsidBtn" onclick="readSSID()">Read Current SSID</button>
             
             <label for="password">WiFi Password:</label>
             <input type="password" id="password" placeholder="Enter WiFi password">
+            <button id="setPassBtn" onclick="setPassword()">Set Password</button>
             
             <button id="applyBtn" onclick="applyWiFiConfig()">Apply WiFi Settings</button>
         </div>
@@ -237,6 +240,9 @@
                 document.getElementById('connectBtn').disabled = true;
                 document.getElementById('connectBtn').textContent = 'Connected';
                 
+                // Read current SSID on connect
+                await readSSID();
+                
                 device.addEventListener('gattserverdisconnected', () => {
                     updateStatus('Device disconnected', 'error');
                     document.getElementById('configForm').style.display = 'none';
@@ -255,6 +261,78 @@
                 }
             }
         });
+
+        async function setSSID() {
+            const ssid = document.getElementById('ssid').value.trim();
+
+            if (!ssid) {
+                updateStatus('Please enter a WiFi network name', 'error');
+                return;
+            }
+
+            if (!device || !device.gatt.connected) {
+                updateStatus('Device not connected', 'error');
+                return;
+            }
+
+            try {
+                updateStatus('Sending SSID...');
+                const ssidBuffer = new TextEncoder().encode(ssid);
+                await ssidCharacteristic.writeValue(ssidBuffer);
+                updateStatus('SSID sent successfully!', 'success');
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+                console.error('Write SSID error:', error);
+            }
+        }
+
+        async function setPassword() {
+            const password = document.getElementById('password').value.trim();
+
+            if (!password) {
+                updateStatus('Please enter a WiFi password', 'error');
+                return;
+            }
+
+            if (!device || !device.gatt.connected) {
+                updateStatus('Device not connected', 'error');
+                return;
+            }
+
+            try {
+                updateStatus('Sending password...');
+                const passBuffer = new TextEncoder().encode(password);
+                await passCharacteristic.writeValue(passBuffer);
+                updateStatus('Password sent successfully!', 'success');
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+                console.error('Write password error:', error);
+            }
+        }
+
+        async function readSSID() {
+            if (!device || !device.gatt.connected) {
+                updateStatus('Device not connected', 'error');
+                return;
+            }
+
+            try {
+                updateStatus('Reading current SSID...');
+                const value = await ssidCharacteristic.readValue();
+                const decoder = new TextDecoder();
+                const ssid = decoder.decode(value);
+                
+                if (ssid && ssid.trim().length > 0) {
+                    document.getElementById('ssid').value = ssid.trim();
+                    updateStatus(`Current SSID: ${ssid.trim()}`, 'success');
+                } else {
+                    updateStatus('No SSID configured', 'info');
+                }
+            } catch (error) {
+                updateStatus(`Error reading SSID: ${error.message}`, 'error');
+                console.error('Read SSID error:', error);
+            }
+        }
 
         async function applyWiFiConfig() {
             const ssid = document.getElementById('ssid').value.trim();

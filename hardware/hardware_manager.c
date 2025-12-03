@@ -7,6 +7,7 @@
 #include "hardware_manager.h"
 #include "wifi_manager.h"
 #include "event_manager.h"
+#include "button_driver.h"
 
 static const char *TAG = "hardware_manager";
 TaskHandle_t led_task_handle = NULL;
@@ -86,4 +87,7 @@ void init_hardware(void)
 
     i2c_master_bus_add_device(bus, &dev_cfg, &dev);
     oled_init(dev);
+
+    // Initialize button driver
+    button_driver_init();
 }

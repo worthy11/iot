@@ -4,7 +4,7 @@
 #include "esp_log.h"
 #include <string.h>
 
-static const char *TAG = "Device_Info_Service";
+static const char *TAG = "device_info_svc";
 
 /* Device Information Service UUID */
 static const ble_uuid16_t device_info_svc_uuid = BLE_UUID16_INIT(0x180A);

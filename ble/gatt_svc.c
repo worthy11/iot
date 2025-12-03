@@ -6,7 +6,7 @@
 #include "wifi_config_service.h"
 #include "esp_log.h"
 
-static const char *TAG = "NimBLE_GATT_Server";
+static const char *TAG = "gatt_svc";
 
 /* Build combined service definition array */
 static struct ble_gatt_svc_def gatt_svr_svcs[16]; /* Adjust size as needed */

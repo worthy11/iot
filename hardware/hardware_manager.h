@@ -3,7 +3,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "oled_manager.h"
+#include "ssd1306.h"
 
 extern TaskHandle_t led_task_handle;
 

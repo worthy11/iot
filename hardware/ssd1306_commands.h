@@ -20,6 +20,7 @@
 #define OLED_SET_MEMORY_MODE 0x20
 #define OLED_SET_COLUMN_ADDR 0x21
 #define OLED_SET_PAGE_ADDR 0x22
+#define OLED_SET_PAGE_START_ADDR 0xB0 // Base command, add page number (0-7) to get 0xB0-0xB7
 
 #define OLED_SET_START_LINE 0x40
 #define OLED_SET_SEGMENT_REMAP_0 0xA0
@@ -36,11 +37,9 @@
 
 #define OLED_CHARGE_PUMP 0x8D
 
-// Read-Modify-Write commands
 #define OLED_RMW_START 0xE0
 #define OLED_RMW_END 0xEE
 
-// Display dimensions
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 64
 

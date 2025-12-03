@@ -3,7 +3,7 @@
 #include "host/ble_gatt.h"
 #include "esp_log.h"
 
-static const char *TAG = "Battery_Service";
+static const char *TAG = "battery_svc";
 
 /* Battery Service UUID */
 static const ble_uuid16_t battery_svc_uuid = BLE_UUID16_INIT(0x180F);
