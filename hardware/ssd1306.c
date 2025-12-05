@@ -80,10 +80,14 @@ void oled_flip_vertical(bool flip)
 
 void oled_set_vertical_offset(uint8_t offset)
 {
-    offset &= 0x3F; // Clamp to valid range (0-63)
+    if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        uint8_t start_line_cmd = OLED_SET_START_LINE | (offset & 0x3F);
+        uint8_t cmd[] = {start_line_cmd};
+        oled_write(cmd, true);
 
-    while (current_first_line != offset)
-        oled_scroll_line(SCROLL_VERTICAL_DOWN);
+        xSemaphoreGive(display_mutex);
+    }
 }
 
 static void oled_set_memory_addressing_mode(uint8_t mode)

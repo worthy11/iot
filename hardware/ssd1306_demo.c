@@ -164,7 +164,6 @@ static void config_display_task(void *pvParameters)
 
     uint32_t notification_value;
     char passkey_str[16];
-    EventBits_t current_bits = event_manager_get_bits();
 
     while (1)
     {
