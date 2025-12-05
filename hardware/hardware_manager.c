@@ -8,6 +8,8 @@
 #include "wifi_manager.h"
 #include "event_manager.h"
 #include "button_driver.h"
+#include "ssd1306_demo.h"
+#include "ssd1306.h"
 
 static const char *TAG = "hardware_manager";
 TaskHandle_t led_task_handle = NULL;
@@ -60,7 +62,7 @@ void init_hardware(void)
         xTaskCreate(
             led_blink_task,
             "led_blink_task",
-            2048,
+            4096,
             NULL,
             5,
             &led_task_handle);
@@ -88,6 +90,6 @@ void init_hardware(void)
     i2c_master_bus_add_device(bus, &dev_cfg, &dev);
     oled_init(dev);
 
-    // Initialize button driver
+    ssd1306_demo_init();
     button_driver_init();
 }

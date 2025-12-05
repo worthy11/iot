@@ -211,6 +211,39 @@
             }
         }
 
+        function onDisconnect() {
+            updateStatus('Device disconnected', 'error');
+            document.getElementById('configForm').style.display = 'none';
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('connectBtn').textContent = 'Connect to Device';
+            // Clean up
+            if (device) {
+                device.removeEventListener('gattserverdisconnected', onDisconnect);
+            }
+            device = null;
+            server = null;
+            wifiService = null;
+            ssidCharacteristic = null;
+            passCharacteristic = null;
+            applyCharacteristic = null;
+        }
+
+        async function ensureConnected() {
+            if (!device) {
+                throw new Error('Device not selected');
+            }
+            if (!device.gatt.connected) {
+                updateStatus('Reconnecting...');
+                server = await device.gatt.connect();
+                // Re-discover services after reconnection
+                wifiService = await server.getPrimaryService(WIFI_SVC_UUID);
+                ssidCharacteristic = await wifiService.getCharacteristic(WIFI_SSID_UUID);
+                passCharacteristic = await wifiService.getCharacteristic(WIFI_PASS_UUID);
+                applyCharacteristic = await wifiService.getCharacteristic(WIFI_APPLY_UUID);
+            }
+            return true;
+        }
+
         document.querySelector('#connectBtn').addEventListener('click', async () => {
             try {
                 updateStatus('Scanning for devices...');
@@ -225,30 +258,36 @@
                 updateStatus('Connecting to device...');
                 server = await device.gatt.connect();
                 
+                // Set up disconnect handler BEFORE discovering services
+                device.addEventListener('gattserverdisconnected', onDisconnect);
+                
                 updateStatus('Discovering services...');
                 
-                wifiService = await server.getPrimaryService(WIFI_SVC_UUID);
-                updateStatus('Getting WiFi characteristics...');
-                
-                ssidCharacteristic = await wifiService.getCharacteristic(WIFI_SSID_UUID);
-                passCharacteristic = await wifiService.getCharacteristic(WIFI_PASS_UUID);
-                applyCharacteristic = await wifiService.getCharacteristic(WIFI_APPLY_UUID);
-                
-                updateStatus('Connected! Enter WiFi credentials below.', 'success');
-                
-                document.getElementById('configForm').style.display = 'block';
-                document.getElementById('connectBtn').disabled = true;
-                document.getElementById('connectBtn').textContent = 'Connected';
-                
-                // Read current SSID on connect
-                await readSSID();
-                
-                device.addEventListener('gattserverdisconnected', () => {
-                    updateStatus('Device disconnected', 'error');
-                    document.getElementById('configForm').style.display = 'none';
-                    document.getElementById('connectBtn').disabled = false;
-                    document.getElementById('connectBtn').textContent = 'Connect to Device';
-                });
+                try {
+                    wifiService = await server.getPrimaryService(WIFI_SVC_UUID);
+                    updateStatus('Getting WiFi characteristics...');
+                    
+                    ssidCharacteristic = await wifiService.getCharacteristic(WIFI_SSID_UUID);
+                    passCharacteristic = await wifiService.getCharacteristic(WIFI_PASS_UUID);
+                    applyCharacteristic = await wifiService.getCharacteristic(WIFI_APPLY_UUID);
+                    
+                    updateStatus('Connected! Enter WiFi credentials below.', 'success');
+                    
+                    document.getElementById('configForm').style.display = 'block';
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('connectBtn').textContent = 'Connected';
+                    
+                    // Read current SSID on connect
+                    await readSSID();
+                } catch (error) {
+                    console.error('Service discovery error:', error);
+                    if (error.message.includes('disconnected') || error.message.includes('GATT Server is disconnected')) {
+                        updateStatus('Connection lost during pairing. Please reconnect.', 'error');
+                        onDisconnect();
+                    } else {
+                        updateStatus(`Error: ${error.message}`, 'error');
+                    }
+                }
                 
             } catch (error) {
                 console.error('Connection error:', error);
@@ -270,12 +309,8 @@
                 return;
             }
 
-            if (!device || !device.gatt.connected) {
-                updateStatus('Device not connected', 'error');
-                return;
-            }
-
             try {
+                await ensureConnected();
                 updateStatus('Sending SSID...');
                 const ssidBuffer = new TextEncoder().encode(ssid);
                 await ssidCharacteristic.writeValue(ssidBuffer);
@@ -283,6 +318,9 @@
             } catch (error) {
                 updateStatus(`Error: ${error.message}`, 'error');
                 console.error('Write SSID error:', error);
+                if (error.message.includes('disconnected')) {
+                    onDisconnect();
+                }
             }
         }
 
@@ -294,12 +332,8 @@
                 return;
             }
 
-            if (!device || !device.gatt.connected) {
-                updateStatus('Device not connected', 'error');
-                return;
-            }
-
             try {
+                await ensureConnected();
                 updateStatus('Sending password...');
                 const passBuffer = new TextEncoder().encode(password);
                 await passCharacteristic.writeValue(passBuffer);
@@ -307,16 +341,15 @@
             } catch (error) {
                 updateStatus(`Error: ${error.message}`, 'error');
                 console.error('Write password error:', error);
+                if (error.message.includes('disconnected')) {
+                    onDisconnect();
+                }
             }
         }
 
         async function readSSID() {
-            if (!device || !device.gatt.connected) {
-                updateStatus('Device not connected', 'error');
-                return;
-            }
-
             try {
+                await ensureConnected();
                 updateStatus('Reading current SSID...');
                 const value = await ssidCharacteristic.readValue();
                 const decoder = new TextDecoder();
@@ -331,6 +364,9 @@
             } catch (error) {
                 updateStatus(`Error reading SSID: ${error.message}`, 'error');
                 console.error('Read SSID error:', error);
+                if (error.message.includes('disconnected')) {
+                    onDisconnect();
+                }
             }
         }
 
@@ -343,12 +379,8 @@
                 return;
             }
 
-            if (!device || !device.gatt.connected) {
-                updateStatus('Device not connected', 'error');
-                return;
-            }
-
             try {
+                await ensureConnected();
                 updateStatus('Sending SSID...');
                 
                 const ssidBuffer = new TextEncoder().encode(ssid);
@@ -371,6 +403,9 @@
             } catch (error) {
                 updateStatus(`Error: ${error.message}`, 'error');
                 console.error('Write error:', error);
+                if (error.message.includes('disconnected')) {
+                    onDisconnect();
+                }
             }
         }
 

@@ -16,6 +16,7 @@ idf_component_register(SRCS "main.c"
                            "hardware/button_driver.c"
                            "hardware/motor_driver.c"
                            "hardware/ssd1306.c"
+                           "hardware/ssd1306_demo.c"
                            "hardware/ph_sensor_driver.c"
                            "hardware/temp_sensor_driver.c"
                            

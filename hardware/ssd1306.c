@@ -9,11 +9,12 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 
+#define FRAMEBUFFER_PAGES (OLED_HEIGHT / 8)
+
 static i2c_master_dev_handle_t oled_dev = NULL;
 static uint8_t cursor_col = 0;
 static uint8_t cursor_row = 0;
 
-#define FRAMEBUFFER_PAGES (OLED_HEIGHT / 8)
 static uint8_t framebuffer[FRAMEBUFFER_PAGES][OLED_WIDTH];
 static SemaphoreHandle_t framebuffer_mutex = NULL;
 static SemaphoreHandle_t display_mutex = NULL;
@@ -21,6 +22,9 @@ static TaskHandle_t scroll_task_handle = NULL;
 
 static volatile oled_scroll_dir_t scroll_type = SCROLL_NONE;
 static volatile uint8_t current_first_line = 0;
+static volatile uint8_t saved_start_page = 0;
+static volatile uint8_t saved_end_page = 7;
+static volatile uint32_t saved_speed_ms = 0;
 
 typedef struct
 {
@@ -76,13 +80,10 @@ void oled_flip_vertical(bool flip)
 
 void oled_set_vertical_offset(uint8_t offset)
 {
-    if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
-    {
-        offset &= 0x3F; // Clamp to valid range (0-63)
-        uint8_t cmd[] = {OLED_SET_DISPLAY_OFFSET, offset};
-        oled_write(cmd, true);
-        xSemaphoreGive(display_mutex);
-    }
+    offset &= 0x3F; // Clamp to valid range (0-63)
+
+    while (current_first_line != offset)
+        oled_scroll_line(SCROLL_VERTICAL_DOWN);
 }
 
 static void oled_set_memory_addressing_mode(uint8_t mode)
@@ -477,13 +478,32 @@ static void oled_scroll_task(void *pvParameters)
     if (params == NULL)
         return;
 
-    oled_scroll_dir_t dir = params->direction;
-    uint32_t speed_ms = params->speed_ms;
+    // Copy params to local variables immediately
+    oled_scroll_dir_t initial_dir = params->direction;
+    uint32_t initial_speed_ms = params->speed_ms;
+
+    // Use global variables so direction can be changed dynamically
     while (1)
     {
+        // Check if we should stop (scroll_type set to SCROLL_NONE)
+        if (scroll_type == SCROLL_NONE)
+        {
+            break;
+        }
+
+        // Use current scroll_type and saved_speed_ms (can be updated by oled_scroll_vertical)
+        oled_scroll_dir_t dir = scroll_type;
+        uint32_t speed_ms = saved_speed_ms;
+        if (speed_ms < 1)
+            speed_ms = initial_speed_ms; // Fallback to initial speed
+
         oled_scroll_line(dir);
         vTaskDelay(pdMS_TO_TICKS(speed_ms));
     }
+
+    // Clear handle before exiting (oled_scroll_software_off will free params)
+    scroll_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 static void oled_scroll_hardware_off(void);
@@ -507,17 +527,19 @@ void oled_scroll_horizontal(oled_scroll_dir_t direction, uint32_t speed_ms, uint
     if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
     {
         scroll_type = direction;
+        saved_start_page = start_page;
+        saved_end_page = end_page;
 
         bool h_dir = (direction == SCROLL_HORIZONTAL_RIGHT);
         uint8_t scroll_cmd = h_dir ? OLED_RIGHT_HORIZONTAL_SCROLL : OLED_LEFT_HORIZONTAL_SCROLL;
         uint8_t scroll_setup[] = {
             scroll_cmd,
-            0x00, // A[7:0] - Dummy byte
-            0x00, // B[2:0] - Start page address (0)
-            0x07, // C[2:0] - Scroll interval (111b = 2 frames, fastest)
-            0x07, // D[2:0] - End page address (7)
-            0x00, // E[7:0] - Dummy byte
-            0xFF  // F[7:0] - Dummy byte
+            0x00,              // A[7:0] - Dummy byte
+            start_page & 0x07, // B[2:0] - Start page address
+            0x07,              // C[2:0] - Scroll interval (111b = 2 frames, fastest)
+            end_page & 0x07,   // D[2:0] - End page address
+            0x00,              // E[7:0] - Dummy byte
+            0xFF               // F[7:0] - Dummy byte
         };
         oled_write(scroll_setup, true);
 
@@ -530,28 +552,35 @@ void oled_scroll_horizontal(oled_scroll_dir_t direction, uint32_t speed_ms, uint
 
 void oled_scroll_vertical(oled_scroll_dir_t direction, uint32_t speed_ms)
 {
-    oled_scroll_software_off();
-
     if (speed_ms < 1)
         speed_ms = 1;
     else if (speed_ms > 1000)
         speed_ms = 1000;
 
     scroll_type = direction;
+    saved_speed_ms = speed_ms;
 
     if (scroll_task_handle == NULL)
     {
-        scroll_task_params_t params = {
-            .direction = direction,
-            .speed_ms = speed_ms,
-        };
-        xTaskCreate(oled_scroll_task, "oled_scroll", 4096, &params, 5, &scroll_task_handle);
+        scroll_task_params = (scroll_task_params_t *)malloc(sizeof(scroll_task_params_t));
+        if (scroll_task_params == NULL)
+        {
+            ESP_LOGE("ssd1306", "Failed to allocate scroll task params");
+            return;
+        }
+
+        scroll_task_params->direction = direction;
+        scroll_task_params->speed_ms = speed_ms;
+
+        xTaskCreate(oled_scroll_task, "oled_scroll", 4096, scroll_task_params, 5, &scroll_task_handle);
     }
 }
 
 void oled_scroll_diagonal(oled_scroll_dir_t v_direction, oled_scroll_dir_t h_direction, uint32_t speed_ms, uint8_t vertical_offset)
 {
-    oled_scroll_off();
+    oled_scroll_hardware_off();
+    oled_scroll_software_off();
+    scroll_type = SCROLL_NONE;
 
     oled_scroll_horizontal(h_direction, speed_ms, 0, 7);
     oled_scroll_vertical(v_direction, speed_ms);
@@ -563,11 +592,6 @@ static void oled_scroll_hardware_off(void)
     {
         uint8_t deactivate_cmd[] = {OLED_DEACTIVATE_SCROLL};
         oled_write(deactivate_cmd, true);
-
-        current_first_line = 0;
-        uint8_t start_line_cmd[] = {OLED_SET_START_LINE | 0x00};
-        oled_write(start_line_cmd, true);
-
         xSemaphoreGive(display_mutex);
     }
 }
@@ -576,10 +600,21 @@ static void oled_scroll_software_off(void)
 {
     if (scroll_task_handle != NULL)
     {
-        TaskHandle_t task_to_delete = scroll_task_handle;
-        scroll_task_handle = NULL;
-        vTaskDelete(task_to_delete);
+        // Signal task to exit by setting scroll_type to SCROLL_NONE
+        scroll_type = SCROLL_NONE;
 
+        // Wait a bit for task to exit cleanly (it will set scroll_task_handle to NULL)
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        // If task still exists, force delete it
+        if (scroll_task_handle != NULL)
+        {
+            TaskHandle_t task_to_delete = scroll_task_handle;
+            scroll_task_handle = NULL;
+            vTaskDelete(task_to_delete);
+        }
+
+        // Free params (task does not free them to avoid double-free)
         if (scroll_task_params != NULL)
         {
             free(scroll_task_params);
@@ -623,43 +658,6 @@ void oled_init(i2c_master_dev_handle_t dev)
     framebuffer_mutex = xSemaphoreCreateMutex();
     display_mutex = xSemaphoreCreateMutex();
     memset(framebuffer, 0, sizeof(framebuffer));
-
     oled_clear_display();
-
-    // oled_set_position(0, 0);
-    // oled_draw_text("AquaTest", 2, 0);
-
-    // oled_set_position(OLED_HEIGHT - 16, OLED_WIDTH - 16);
-    // oled_draw_text_inverse("AquaTest", 2, 180);
-
-    oled_invert_display();
-
-    oled_set_position(0, 0);
-    oled_draw_bitmap(fish_image_data, FISH_IMAGE_DATA_WIDTH, FISH_IMAGE_DATA_HEIGHT);
-
-    oled_set_position(FISH_IMAGE_DATA_HEIGHT, 0);
-    oled_draw_bitmap(fish_image_data, FISH_IMAGE_DATA_WIDTH, FISH_IMAGE_DATA_HEIGHT);
-
     oled_update_display();
-
-    // while (1)
-    // {
-    //     oled_scroll_diagonal(SCROLL_VERTICAL_DOWN, SCROLL_HORIZONTAL_RIGHT, 40, 1);
-    //     vTaskDelay(pdMS_TO_TICKS(4000));
-
-    //     oled_scroll_diagonal(SCROLL_VERTICAL_UP, SCROLL_HORIZONTAL_LEFT, 40, 1);
-    //     vTaskDelay(pdMS_TO_TICKS(4000));
-
-    //     // oled_flip_horizontal(false);
-    //     // vTaskDelay(pdMS_TO_TICKS(2000));
-
-    //     // oled_flip_vertical(false);
-    //     // vTaskDelay(pdMS_TO_TICKS(2000));
-
-    //     // oled_flip_horizontal(true);
-    //     // vTaskDelay(pdMS_TO_TICKS(2000));
-
-    //     // oled_flip_vertical(true);
-    //     // vTaskDelay(pdMS_TO_TICKS(2000));
-    // }
 }

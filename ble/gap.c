@@ -7,18 +7,27 @@
 #include "gap.h"
 #include "common.h"
 #include "gatt_svc.h"
+#include "ssd1306_demo.h"
+#include "host/ble_sm.h"
+#include "host/ble_store.h"
+#include "store/config/ble_store_config.h"
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+#include "esp_random.h"
 
 static const char *TAG = "gap";
 
 /* Private function declarations */
 inline static void format_addr(char *addr_str, uint8_t addr[]);
-static void print_conn_desc(struct ble_gap_conn_desc *desc);
 static void start_advertising(void);
 static int gap_event_handler(struct ble_gap_event *event, void *arg);
 
 /* Private variables */
 static uint8_t own_addr_type;
 static uint8_t addr_val[6] = {0};
+static uint32_t current_passkey = 0;
+static uint16_t passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
 /* Private functions */
 inline static void format_addr(char *addr_str, uint8_t addr[])
@@ -27,31 +36,36 @@ inline static void format_addr(char *addr_str, uint8_t addr[])
             addr[2], addr[3], addr[4], addr[5]);
 }
 
-static void print_conn_desc(struct ble_gap_conn_desc *desc)
+static uint32_t generate_passkey(void)
 {
-    /* Local variables */
-    char addr_str[18] = {0};
+    return (uint32_t)(esp_random() % 1000000);
+}
 
-    /* Connection handle */
-    ESP_LOGI(TAG, "connection handle: %d", desc->conn_handle);
+static int ble_gap_passkey_action_cb(struct ble_gap_event *event, void *arg)
+{
+    int rc = 0;
 
-    /* Local ID address */
-    format_addr(addr_str, desc->our_id_addr.val);
-    ESP_LOGI(TAG, "device id address: type=%d, value=%s",
-             desc->our_id_addr.type, addr_str);
+    switch (event->passkey.params.action)
+    {
+    case BLE_SM_IOACT_DISP:
+        current_passkey = generate_passkey();
+        passkey_conn_handle = event->passkey.conn_handle;
 
-    /* Peer ID address */
-    format_addr(addr_str, desc->peer_id_addr.val);
-    ESP_LOGI(TAG, "peer id address: type=%d, value=%s", desc->peer_id_addr.type,
-             addr_str);
+        ESP_LOGI(TAG, "Passkey: %06lu", (unsigned long)current_passkey);
 
-    /* Connection info */
-    ESP_LOGI(TAG,
-             "conn_itvl=%d, conn_latency=%d, supervision_timeout=%d, "
-             "encrypted=%d, authenticated=%d, bonded=%d\n",
-             desc->conn_itvl, desc->conn_latency, desc->supervision_timeout,
-             desc->sec_state.encrypted, desc->sec_state.authenticated,
-             desc->sec_state.bonded);
+        ssd1306_demo_display_passkey(current_passkey);
+        struct ble_sm_io io_data = {
+            .action = BLE_SM_IOACT_DISP,
+            .passkey = current_passkey};
+        rc = ble_sm_inject_io(event->passkey.conn_handle, &io_data);
+        if (rc != 0)
+        {
+            ESP_LOGE(TAG, "Failed to inject passkey: %d (0x%04x)", rc, rc);
+        }
+        break;
+    }
+
+    return rc;
 }
 
 static void start_advertising(void)
@@ -106,7 +120,7 @@ static void start_advertising(void)
         return;
     }
 
-    /* Set non-connetable and general discoverable mode to be a beacon */
+    /* Set connectable and general discoverable mode */
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
@@ -143,11 +157,6 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
     /* Connect event */
     case BLE_GAP_EVENT_CONNECT:
         /* A new connection was established or a connection attempt failed. */
-        ESP_LOGI(TAG, "connection %s; status=%d",
-                 event->connect.status == 0 ? "established" : "failed",
-                 event->connect.status);
-
-        /* Connection succeeded */
         if (event->connect.status == 0)
         {
             /* Check connection handle */
@@ -160,10 +169,26 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                 return rc;
             }
 
-            /* Print connection descriptor */
-            print_conn_desc(&desc);
+            ESP_LOGI(TAG, "Connection security: encrypted=%d, authenticated=%d, bonded=%d",
+                     desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
 
-            /* Try to update connection parameters */
+            if (desc.sec_state.bonded)
+            {
+                ESP_LOGI(TAG, "Device is already bonded, clearing bond to force passkey entry...");
+                ble_store_clear();
+                ESP_LOGI(TAG, "Bond cleared, disconnecting to force re-pairing with passkey...");
+                ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                return rc;
+            }
+
+            ESP_LOGI(TAG, "Initiating pairing/encryption...");
+            ble_store_clear();
+            rc = ble_gap_security_initiate(event->connect.conn_handle);
+            if (rc != 0)
+            {
+                ESP_LOGE(TAG, "Failed to initiate security: %d", rc);
+            }
+
             struct ble_gap_upd_params params = {.itvl_min = desc.conn_itvl,
                                                 .itvl_max = desc.conn_itvl,
                                                 .latency = 3,
@@ -178,31 +203,60 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                     rc);
                 return rc;
             }
+
+            if (passkey_conn_handle == event->connect.conn_handle)
+            {
+                ssd1306_demo_clear_passkey();
+                passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+                current_passkey = 0;
+            }
         }
-        /* Connection failed, restart advertising */
         else
         {
             start_advertising();
         }
         return rc;
 
-    /* Disconnect event */
-    case BLE_GAP_EVENT_DISCONNECT:
-        /* A connection was terminated, print connection descriptor */
-        ESP_LOGI(TAG, "disconnected from peer; reason=%d",
-                 event->disconnect.reason);
-
-        /* Restart advertising */
-        start_advertising();
+    case BLE_GAP_EVENT_PASSKEY_ACTION:
+        rc = ble_gap_passkey_action_cb(event, NULL);
         return rc;
 
-    /* Connection parameters update event */
-    case BLE_GAP_EVENT_CONN_UPDATE:
-        /* The central has updated the connection parameters. */
-        ESP_LOGI(TAG, "connection updated; status=%d",
-                 event->conn_update.status);
+    case BLE_GAP_EVENT_ENC_CHANGE:
+        struct ble_gap_conn_desc desc;
+        rc = ble_gap_conn_find(event->enc_change.conn_handle, &desc);
+        if (rc == 0)
+        {
+            if (event->enc_change.status == 0 && desc.sec_state.encrypted)
+            {
+                ESP_LOGI(TAG, "Connection successfully encrypted and authenticated");
+                if (passkey_conn_handle == event->enc_change.conn_handle)
+                {
+                    ssd1306_demo_clear_passkey();
+                    passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+                    current_passkey = 0;
+                }
+            }
+            else if (event->enc_change.status != 0)
+            {
+                ESP_LOGE(TAG, "Encryption change failed with status: %d", event->enc_change.status);
+            }
+        }
+        return rc;
 
-        /* Print connection descriptor */
+    case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI(TAG, "Disconnected from peer; reason=%d (0x%02x)",
+                 event->disconnect.reason, event->disconnect.reason);
+
+        if (passkey_conn_handle != BLE_HS_CONN_HANDLE_NONE)
+        {
+            ssd1306_demo_clear_passkey();
+            passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            current_passkey = 0;
+        }
+
+        return rc;
+
+    case BLE_GAP_EVENT_CONN_UPDATE:
         rc = ble_gap_conn_find(event->conn_update.conn_handle, &desc);
         if (rc != 0)
         {
@@ -210,52 +264,29 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                      rc);
             return rc;
         }
-        print_conn_desc(&desc);
         return rc;
 
-    /* Advertising complete event */
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        /* Advertising completed, restart advertising */
-        ESP_LOGI(TAG, "advertise complete; reason=%d",
-                 event->adv_complete.reason);
         start_advertising();
         return rc;
 
-    /* Notification sent event */
     case BLE_GAP_EVENT_NOTIFY_TX:
         if ((event->notify_tx.status != 0) &&
             (event->notify_tx.status != BLE_HS_EDONE))
         {
-            /* Print notification info on error */
             ESP_LOGI(TAG,
-                     "notify event; conn_handle=%d attr_handle=%d "
+                     "Notify event; conn_handle=%d attr_handle=%d "
                      "status=%d is_indication=%d",
                      event->notify_tx.conn_handle, event->notify_tx.attr_handle,
                      event->notify_tx.status, event->notify_tx.indication);
         }
         return rc;
 
-    /* Subscribe event */
     case BLE_GAP_EVENT_SUBSCRIBE:
-        /* Print subscription info to log */
-        ESP_LOGI(TAG,
-                 "subscribe event; conn_handle=%d attr_handle=%d "
-                 "reason=%d prevn=%d curn=%d previ=%d curi=%d",
-                 event->subscribe.conn_handle, event->subscribe.attr_handle,
-                 event->subscribe.reason, event->subscribe.prev_notify,
-                 event->subscribe.cur_notify, event->subscribe.prev_indicate,
-                 event->subscribe.cur_indicate);
-
-        /* GATT subscribe event callback */
         gatt_svr_subscribe_cb(event);
         return rc;
 
-    /* MTU update event */
     case BLE_GAP_EVENT_MTU:
-        /* Print MTU update info to log */
-        ESP_LOGI(TAG, "mtu update event; conn_handle=%d cid=%d mtu=%d",
-                 event->mtu.conn_handle, event->mtu.channel_id,
-                 event->mtu.value);
         return rc;
     }
 
@@ -315,5 +346,16 @@ int gap_init(void)
                  DEVICE_NAME, rc);
         return rc;
     }
+
+    /* Configure security manager for passkey pairing */
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_DISP_ONLY; // Display only - show passkey
+    ble_hs_cfg.sm_bonding = 0;                      // Enable bonding
+    ble_hs_cfg.sm_mitm = 1;                         // Require MITM protection (passkey)
+    ble_hs_cfg.sm_sc = 0;                           // Legacy pairing (not secure connections)
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+
+    // No need to seed - using ESP32 hardware RNG (esp_random) for passkey generation
+
     return rc;
 }

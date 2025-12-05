@@ -83,11 +83,6 @@ EventBits_t event_manager_clear_bits(EventBits_t bits)
 
 EventBits_t event_manager_get_bits(void)
 {
-    if (s_event_group == NULL)
-    {
-        ESP_LOGW(TAG, "Event group not initialized, call event_manager_init() first");
-        return 0;
-    }
     return xEventGroupGetBits(s_event_group);
 }
 

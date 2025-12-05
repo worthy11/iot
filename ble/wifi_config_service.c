@@ -26,6 +26,9 @@ static int wifi_config_ssid_access_cb(uint16_t conn_handle, uint16_t attr_handle
 static int wifi_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
                         struct ble_gatt_access_ctxt *ctxt, void *arg);
 
+static int wifi_format_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
+                               struct ble_gatt_access_ctxt *ctxt, void *arg);
+
 static const struct ble_gatt_svc_def wifi_svc_defs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -35,25 +38,27 @@ static const struct ble_gatt_svc_def wifi_svc_defs[] = {
                 .uuid = &WIFI_SSID_UUID.u,
                 .access_cb = wifi_config_ssid_access_cb,
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
-                .descriptors = (struct ble_gatt_dsc_def[]){// descriptory nie działają - może wina rnf na ios może nie
-                                                           {
-                                                               .uuid = BLE_UUID16_DECLARE(0x2901),
-                                                               .att_flags = BLE_ATT_F_READ,
-                                                               .min_key_size = 0,
-                                                               .access_cb = wifi_desc_cb,
-                                                               .arg = "SSID"},
-                                                           {0}},
+                .min_key_size = 16,
+                .descriptors = (struct ble_gatt_dsc_def[]){
+                    {.uuid = BLE_UUID16_DECLARE(0x2901),
+                     .att_flags = BLE_ATT_F_READ,
+                     .min_key_size = 0,
+                     .access_cb = wifi_desc_cb,
+                     .arg = "SSID"},
+                    {0}},
             },
             {
                 .uuid = &WIFI_PASS_UUID.u,
                 .access_cb = wifi_config_write_cb,
                 .flags = BLE_GATT_CHR_F_WRITE,
+                .min_key_size = 16,
                 .descriptors = (struct ble_gatt_dsc_def[]){{.uuid = BLE_UUID16_DECLARE(0x2901), .att_flags = BLE_ATT_F_READ, .min_key_size = 0, .access_cb = wifi_desc_cb, .arg = "Password"}, {0}},
             },
             {
                 .uuid = &WIFI_APPLY_UUID.u,
                 .access_cb = wifi_config_write_cb,
                 .flags = BLE_GATT_CHR_F_WRITE,
+                .min_key_size = 16,
                 .descriptors = (struct ble_gatt_dsc_def[]){{.uuid = BLE_UUID16_DECLARE(0x2901), .att_flags = BLE_ATT_F_READ, .min_key_size = 0, .access_cb = wifi_desc_cb, .arg = "Apply"}, {0}},
             },
             {0},
@@ -66,6 +71,29 @@ static int wifi_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
 {
     const char *desc = (const char *)arg;
     return os_mbuf_append(ctxt->om, desc, strlen(desc));
+}
+
+static int wifi_format_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
+                               struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn_handle;
+    (void)attr_handle;
+    (void)arg;
+
+    // Characteristic Format descriptor (0x2904)
+    // Format: UTF-8 string (0x19)
+    // Exponent: 0x00
+    // Unit: Unitless (0x2700)
+    // Namespace: Bluetooth SIG (0x01)
+    // Description: 0x0000
+    uint8_t format_desc[] = {
+        0x19,       // Format: UTF-8 string
+        0x00,       // Exponent
+        0x00, 0x27, // Unit: 0x2700 (unitless)
+        0x01,       // Namespace: Bluetooth SIG
+        0x00, 0x00  // Description
+    };
+    return os_mbuf_append(ctxt->om, format_desc, sizeof(format_desc));
 }
 
 static int wifi_config_ssid_access_cb(uint16_t conn_handle, uint16_t attr_handle,
@@ -165,26 +193,28 @@ static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
         if (len > 0 && buf[0] == 0x01)
         {
             const char *current_ssid = wifi_manager_get_current_ssid();
-            const char *ssid_to_use = (strlen(s_pending_ssid) > 0) ? s_pending_ssid : current_ssid;
+            const char *current_pass = wifi_manager_get_current_password();
 
-            if (strlen(s_pending_pass) > 0 && ssid_to_use && strlen(ssid_to_use) > 0)
+            const char *ssid_to_use = (strlen(s_pending_ssid) > 0) ? s_pending_ssid : current_ssid;
+            const char *pass_to_use = (strlen(s_pending_pass) > 0) ? s_pending_pass : current_pass;
+
+            // Use empty strings if nothing is available - this will clear credentials
+            const char *final_ssid = ssid_to_use ? ssid_to_use : "";
+            const char *final_pass = pass_to_use ? pass_to_use : "";
+
+            ESP_LOGI(TAG, "CONNECT=1 -> saving WiFi credentials (SSID: '%s')", final_ssid);
+            esp_err_t err = wifi_manager_save_credentials(final_ssid, final_pass);
+            if (err == ESP_OK)
             {
-                ESP_LOGI(TAG, " CONNECT=1 -> saving WiFi credentials");
-                esp_err_t err = wifi_manager_save_credentials(ssid_to_use, s_pending_pass);
-                if (err == ESP_OK)
-                {
-                    ESP_LOGI(TAG, "WiFi credentials saved successfully. Restart to apply.");
-                    // Set event bit to signal GATT server to stop
-                    event_manager_set_bits(EVENT_BIT_WIFI_CONFIG_SAVED);
-                }
-                init_wifi_manager();
-                memset(s_pending_ssid, 0, sizeof(s_pending_ssid));
-                memset(s_pending_pass, 0, sizeof(s_pending_pass));
+                ESP_LOGI(TAG, "WiFi credentials saved successfully.");
+                event_manager_set_bits(EVENT_BIT_WIFI_CONFIG_SAVED);
             }
             else
             {
-                ESP_LOGI(TAG, "SSID or Password isn't set");
+                ESP_LOGE(TAG, "Failed to save WiFi credentials: %s", esp_err_to_name(err));
             }
+            memset(s_pending_ssid, 0, sizeof(s_pending_ssid));
+            memset(s_pending_pass, 0, sizeof(s_pending_pass));
         }
         else
         {

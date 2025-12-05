@@ -6,8 +6,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define oled_write_array(payload, is_command) \
-    oled_write_impl(payload, sizeof(payload), is_command)
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 64
+#define OLED_FRAMEBUFFER_SIZE (OLED_WIDTH * (OLED_HEIGHT / 8))
 
 typedef enum
 {
@@ -17,6 +18,19 @@ typedef enum
     SCROLL_VERTICAL_UP,
     SCROLL_VERTICAL_DOWN,
 } oled_scroll_dir_t;
+
+typedef struct
+{
+    oled_scroll_dir_t direction;
+    uint32_t speed_ms;
+    uint8_t start_page;
+    uint8_t end_page;
+} oled_scroll_state_t;
+
+typedef struct
+{
+    uint8_t buffer[OLED_FRAMEBUFFER_SIZE];
+} oled_buffer_state_t;
 
 void oled_init(i2c_master_dev_handle_t dev);
 

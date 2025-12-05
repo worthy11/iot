@@ -47,6 +47,7 @@ static void gatt_timeout_callback(TimerHandle_t xTimer)
     ESP_LOGI(TAG, "GATT server timeout reached, stopping...");
     stop_gatt_server();
     gatt_server_active = false;
+    event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
 
     if (gatt_timeout_timer != NULL)
     {
@@ -77,6 +78,7 @@ static void gatt_server_manager_task(void *param)
                 ESP_LOGI(TAG, "WiFi config saved, stopping GATT server...");
                 stop_gatt_server();
                 gatt_server_active = false;
+                event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
 
                 if (gatt_timeout_timer != NULL)
                 {
@@ -93,6 +95,7 @@ static void gatt_server_manager_task(void *param)
                 ESP_LOGI(TAG, "Starting GATT server...");
                 start_gatt_server();
                 gatt_server_active = true;
+                event_manager_set_bits(EVENT_BIT_CONFIG_MODE);
 
                 if (gatt_timeout_timer == NULL)
                 {
@@ -119,6 +122,7 @@ static void gatt_server_manager_task(void *param)
                 ESP_LOGI(TAG, "Stopping GATT server...");
                 stop_gatt_server();
                 gatt_server_active = false;
+                event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
 
                 if (gatt_timeout_timer != NULL)
                 {

@@ -63,8 +63,8 @@ static bool wifi_config_is_valid(const app_wifi_config_t *cfg)
 {
     if (!cfg)
         return false;
-    if (cfg->ssid[0] == '\0')
-        return false;
+    // Allow empty SSID/password - this is used to clear credentials
+    // Empty config is valid (will result in no WiFi connection attempt)
     return true;
 }
 
@@ -113,9 +113,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         s_wifi_connected = false;
         ESP_LOGI(TAG, "WiFi disconnected. Retrying connection to the AP ssid='%s'", g_current_cfg_valid ? g_current_cfg.ssid : "(unknown)");
 
-        // Post WiFi disconnected event to centralized event system
         event_manager_clear_bits(EVENT_BIT_WIFI_STATUS);
-
         esp_wifi_connect();
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
@@ -129,8 +127,32 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             xEventGroupSetBits(wifi_status_event_group, WIFI_STATUS_BIT);
         }
 
-        // Post WiFi connected event to centralized event system
         event_manager_set_bits(EVENT_BIT_WIFI_STATUS);
+    }
+}
+
+static void wifi_credential_clear_task(void *pvParameters)
+{
+    TaskHandle_t task_handle = xTaskGetCurrentTaskHandle();
+    event_manager_register_notification(task_handle, EVENT_BIT_WIFI_CLEAR_CREDENTIALS);
+
+    while (1)
+    {
+        EventBits_t bits = event_manager_wait_bits(
+            EVENT_BIT_WIFI_CLEAR_CREDENTIALS,
+            true,  // Clear on exit
+            false, // Wait for any
+            portMAX_DELAY);
+
+        if (bits & EVENT_BIT_WIFI_CLEAR_CREDENTIALS)
+        {
+            ESP_LOGI(TAG, "Clearing WiFi credentials (requested via event bit)");
+            esp_err_t err = wifi_manager_clear_credentials();
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Failed to clear WiFi credentials: %s", esp_err_to_name(err));
+            }
+        }
     }
 }
 
@@ -152,6 +174,16 @@ void init_wifi_manager(void)
         ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
 
         s_wifi_core_initialized = true;
+
+        // Create task to handle credential clearing requests
+        xTaskCreate(
+            wifi_credential_clear_task,
+            "wifi_clear_cred",
+            4096, // Larger stack for WiFi operations
+            NULL,
+            5,
+            NULL);
+        ESP_LOGI(TAG, "WiFi credential clear task started");
     }
     else
     {
@@ -166,11 +198,6 @@ void init_wifi_manager(void)
         ESP_LOGI(TAG, "Using WiFi config from NVS: ssid='%s'", stored_cfg.ssid);
         g_current_cfg = stored_cfg;
         g_current_cfg_valid = true;
-    }
-    else
-    {
-        ESP_LOGW(TAG, "No valid WiFi config in NVS; WiFi will start with empty credentials (no connect)");
-        g_current_cfg_valid = false;
     }
 
     wifi_config_t wifi_config = {
@@ -216,11 +243,62 @@ const char *wifi_manager_get_current_ssid(void)
     return g_current_cfg_valid ? g_current_cfg.ssid : NULL;
 }
 
+const char *wifi_manager_get_current_password(void)
+{
+    return g_current_cfg_valid ? g_current_cfg.password : NULL;
+}
+
+esp_err_t wifi_manager_clear_credentials(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(WIFI_CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to open NVS namespace for clearing credentials: %d", err);
+        return err;
+    }
+
+    // Erase both SSID and password keys
+    err = nvs_erase_key(handle, "ssid");
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND)
+    {
+        ESP_LOGW(TAG, "Failed to erase SSID key: %d", err);
+    }
+
+    err = nvs_erase_key(handle, "pass");
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND)
+    {
+        ESP_LOGW(TAG, "Failed to erase password key: %d", err);
+    }
+
+    err = nvs_commit(handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to commit NVS changes: %d", err);
+        nvs_close(handle);
+        return err;
+    }
+
+    nvs_close(handle);
+
+    // Clear in-memory config
+    memset(&g_current_cfg, 0, sizeof(g_current_cfg));
+    g_current_cfg_valid = false;
+
+    event_manager_clear_bits(EVENT_BIT_WIFI_STATUS);
+    esp_wifi_stop();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    init_wifi_manager();
+
+    ESP_LOGI(TAG, "WiFi credentials cleared successfully");
+    return ESP_OK;
+}
+
 esp_err_t wifi_manager_save_credentials(const char *ssid, const char *password)
 {
     if (!ssid || !password)
     {
-        ESP_LOGE(TAG, "Invalid SSID or password");
+        ESP_LOGE(TAG, "Invalid SSID or password (NULL pointer)");
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -228,6 +306,8 @@ esp_err_t wifi_manager_save_credentials(const char *ssid, const char *password)
     strncpy(cfg.ssid, ssid, sizeof(cfg.ssid) - 1);
     strncpy(cfg.password, password, sizeof(cfg.password) - 1);
 
+    // Empty strings are allowed - this will clear credentials
+    // Validation always passes now (empty config is valid)
     if (!wifi_config_is_valid(&cfg))
     {
         ESP_LOGE(TAG, "WiFi config validation failed (ssid='%s')", ssid);
@@ -237,9 +317,20 @@ esp_err_t wifi_manager_save_credentials(const char *ssid, const char *password)
     esp_err_t err = wifi_config_save(&cfg);
     if (err == ESP_OK)
     {
-        ESP_LOGI(TAG, "WiFi credentials saved to NVS: ssid='%s'", ssid);
-        g_current_cfg = cfg;
-        g_current_cfg_valid = true;
+        if (strlen(ssid) > 0)
+        {
+            ESP_LOGI(TAG, "WiFi credentials saved to NVS: ssid='%s'", ssid);
+            g_current_cfg = cfg;
+            g_current_cfg_valid = true;
+        }
+        else
+        {
+            ESP_LOGI(TAG, "WiFi credentials cleared (empty SSID saved)");
+            memset(&g_current_cfg, 0, sizeof(g_current_cfg));
+            g_current_cfg_valid = false;
+        }
+
+        init_wifi_manager();
     }
     else
     {
