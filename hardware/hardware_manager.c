@@ -20,4 +20,5 @@ void hardware_init(void)
     break_beam_init(GPIO_BREAK_BEAM);
     motor_driver_init(GPIO_MOTOR_IN1, GPIO_MOTOR_IN2, GPIO_MOTOR_IN3, GPIO_MOTOR_IN4);
     ph_sensor_init(GPIO_PH_OUTPUT, GPIO_PH_TEMP_COMP);
+    //temp_sensor_init(GPIO_NUM_4);
 }
