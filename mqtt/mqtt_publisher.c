@@ -10,7 +10,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_random.h"
-#include "../wifi_manager.h"
+#include "wifi_manager.h"
 
 #include "esp_log.h"
 #include "mqtt_client.h"
@@ -39,8 +39,10 @@ static bool feed_enabled = false;
 
 static void temperature_publish_task(void *param)
 {
-    while (1) {
-        if (g_client != NULL && temperature_enabled) {
+    while (1)
+    {
+        if (g_client != NULL && temperature_enabled)
+        {
             char msg[8];
             int value = (int)(esp_random() % 101);
             snprintf(msg, sizeof(msg), "%d *C", value);
@@ -53,8 +55,10 @@ static void temperature_publish_task(void *param)
 
 static void ph_publish_task(void *param)
 {
-    while (1) {
-        if (g_client != NULL && ph_enabled) {
+    while (1)
+    {
+        if (g_client != NULL && ph_enabled)
+        {
             char msg[8];
             int value = (int)(esp_random() % 15);
             snprintf(msg, sizeof(msg), "%d", value);
@@ -65,12 +69,14 @@ static void ph_publish_task(void *param)
     }
 }
 
-static void feed_task() {
-    if (g_client != NULL && feed_enabled) {
+static void feed_task()
+{
+    if (g_client != NULL && feed_enabled)
+    {
         char msg[24];
         time_t now = time(NULL);
         struct tm *timeinfo = localtime(&now);
-        snprintf(msg, sizeof(msg), "feeding on at %02d:%02d:%02d", 
+        snprintf(msg, sizeof(msg), "feeding on at %02d:%02d:%02d",
                  timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
         int msg_id = esp_mqtt_client_enqueue(g_client, feed_topic, msg, 0, 1, 0, true);
         ESP_LOGI(TAG, "Enqueue -> \"%s\" msg_id=%d", msg, msg_id);
@@ -80,39 +86,47 @@ static void feed_task() {
 static void process_command(const char *cmd, int len)
 {
     char buf[32];
-    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    if (len >= sizeof(buf))
+        len = sizeof(buf) - 1;
     memcpy(buf, cmd, len);
     buf[len] = 0;
 
     int value;
-    if (sscanf(buf, "temperature %d", &value) == 1) {
+    if (sscanf(buf, "temperature %d", &value) == 1)
+    {
         temperature_interval_sec = value;
         ESP_LOGW(TAG, "Temperature interval set to %d seconds", temperature_interval_sec);
-        if (!temperature_enabled) {
+        if (!temperature_enabled)
+        {
             temperature_enabled = true;
             ESP_LOGI(TAG, "Start publishing temperature data");
         }
     }
-    else if (sscanf(buf, "ph %d", &value) == 1) {
+    else if (sscanf(buf, "ph %d", &value) == 1)
+    {
         ph_interval_sec = value;
         ESP_LOGW(TAG, "pH interval set to %d seconds", ph_interval_sec);
-        if (!ph_enabled) {
+        if (!ph_enabled)
+        {
             ph_enabled = true;
             ESP_LOGI(TAG, "Start publishing pH data");
         }
     }
-    else if (strcmp(buf, "feed") == 0) {
+    else if (strcmp(buf, "feed") == 0)
+    {
         feed_enabled = true;
         ESP_LOGI(TAG, "Feeding started");
         feed_task();
         feed_enabled = false;
     }
-    else if (strcmp(buf, "stop") == 0) {
+    else if (strcmp(buf, "stop") == 0)
+    {
         temperature_enabled = false;
         ph_enabled = false;
         ESP_LOGI(TAG, "Publishing stopped");
     }
-    else {
+    else
+    {
         ESP_LOGW(TAG, "Unknown command: %s", buf);
     }
 }
@@ -121,14 +135,15 @@ static esp_err_t get_mac_address_string(char *mac_str)
 {
     uint8_t mac[6];
     esp_err_t ret = esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         ESP_LOGE(TAG, "Failed to get base MAC address");
         return ret;
     }
 
     snprintf(mac_str, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    
+
     ESP_LOGI(TAG, "Aquatest MAC: %s", mac_str);
     return ESP_OK;
 }
@@ -139,7 +154,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     esp_mqtt_event_handle_t event = event_data;
     g_client = event->client;
 
-    switch (event_id) {
+    switch (event_id)
+    {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT connected");
         esp_mqtt_client_subscribe(g_client, cmd_topic, 1);
@@ -163,7 +179,7 @@ static void initialize_sntp(void)
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
     esp_sntp_init();
-    
+
     // Set timezone to Warsaw (CET-1CEST,M3.5.0,M10.5.0/3)
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
     tzset();
@@ -171,7 +187,8 @@ static void initialize_sntp(void)
 
 static void mqtt_app_start(void)
 {
-    if (get_mac_address_string(device_mac) != ESP_OK) {
+    if (get_mac_address_string(device_mac) != ESP_OK)
+    {
         ESP_LOGE(TAG, "MAC error");
         return;
     }
@@ -180,13 +197,12 @@ static void mqtt_app_start(void)
     snprintf(ph_topic, sizeof(ph_topic), "%s/%s/data/ph", user_id, device_mac);
     snprintf(feed_topic, sizeof(feed_topic), "%s/%s/data/feed", user_id, device_mac);
     snprintf(cmd_topic, sizeof(cmd_topic), "%s/%s/cmd", user_id, device_mac);
-    
+
     initialize_sntp();
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = BROKER_URL,
-        .credentials.username = user_id
-    };
+        .credentials.username = user_id};
 
     g_client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(g_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
@@ -198,9 +214,5 @@ static void mqtt_app_start(void)
 
 void init_mqtt(void)
 {
-    ESP_LOGI(TAG, "Startup");
-    ESP_ERROR_CHECK(nvs_flash_init());
-    init_wifi_manager();
-
     mqtt_app_start();
 }
