@@ -9,8 +9,7 @@
 
 extern EventGroupHandle_t wifi_status_event_group;
 
-void init_wifi_manager(void);
-bool wifi_manager_is_connected(void);
+void wifi_manager_init(void);
 const char *wifi_manager_get_current_ssid(void);
 const char *wifi_manager_get_current_password(void);
 

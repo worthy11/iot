@@ -214,9 +214,5 @@ static void mqtt_app_start(void)
 
 void init_mqtt(void)
 {
-    ESP_LOGI(TAG, "Startup");
-    ESP_ERROR_CHECK(nvs_flash_init());
-    init_wifi_manager();
-
     mqtt_app_start();
 }

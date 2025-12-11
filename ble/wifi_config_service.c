@@ -26,9 +26,6 @@ static int wifi_config_ssid_access_cb(uint16_t conn_handle, uint16_t attr_handle
 static int wifi_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
                         struct ble_gatt_access_ctxt *ctxt, void *arg);
 
-static int wifi_format_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
-                               struct ble_gatt_access_ctxt *ctxt, void *arg);
-
 static const struct ble_gatt_svc_def wifi_svc_defs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -73,29 +70,6 @@ static int wifi_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
     return os_mbuf_append(ctxt->om, desc, strlen(desc));
 }
 
-static int wifi_format_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
-                               struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    (void)conn_handle;
-    (void)attr_handle;
-    (void)arg;
-
-    // Characteristic Format descriptor (0x2904)
-    // Format: UTF-8 string (0x19)
-    // Exponent: 0x00
-    // Unit: Unitless (0x2700)
-    // Namespace: Bluetooth SIG (0x01)
-    // Description: 0x0000
-    uint8_t format_desc[] = {
-        0x19,       // Format: UTF-8 string
-        0x00,       // Exponent
-        0x00, 0x27, // Unit: 0x2700 (unitless)
-        0x01,       // Namespace: Bluetooth SIG
-        0x00, 0x00  // Description
-    };
-    return os_mbuf_append(ctxt->om, format_desc, sizeof(format_desc));
-}
-
 static int wifi_config_ssid_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                                       struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -113,7 +87,6 @@ static int wifi_config_ssid_access_cb(uint16_t conn_handle, uint16_t attr_handle
         {
             const char *ssid_to_return = NULL;
 
-            // Return pending SSID if set, otherwise return current saved SSID
             if (strlen(s_pending_ssid) > 0)
             {
                 ssid_to_return = s_pending_ssid;
@@ -130,7 +103,6 @@ static int wifi_config_ssid_access_cb(uint16_t conn_handle, uint16_t attr_handle
             }
             else
             {
-                // Return empty string if no SSID is set
                 return 0;
             }
         }
@@ -186,7 +158,7 @@ static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
         size_t copy_len = len < (int)sizeof(s_pending_pass) - 1 ? (size_t)len : sizeof(s_pending_pass) - 1;
         memcpy(s_pending_pass, buf, copy_len);
         s_pending_pass[copy_len] = '\0';
-        ESP_LOGI(TAG, "Password received");
+        ESP_LOGI(TAG, "Password received (pending, not saved yet)");
     }
     else if (ble_uuid_cmp(uuid, &WIFI_APPLY_UUID.u) == 0)
     {
@@ -202,7 +174,6 @@ static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
             const char *final_ssid = ssid_to_use ? ssid_to_use : "";
             const char *final_pass = pass_to_use ? pass_to_use : "";
 
-            ESP_LOGI(TAG, "CONNECT=1 -> saving WiFi credentials (SSID: '%s')", final_ssid);
             esp_err_t err = wifi_manager_save_credentials(final_ssid, final_pass);
             if (err == ESP_OK)
             {
@@ -215,10 +186,6 @@ static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
             }
             memset(s_pending_ssid, 0, sizeof(s_pending_ssid));
             memset(s_pending_pass, 0, sizeof(s_pending_pass));
-        }
-        else
-        {
-            ESP_LOGI(TAG, "connect != 1, ignored");
         }
     }
 
@@ -235,29 +202,4 @@ int wifi_config_service_init(void)
 const struct ble_gatt_svc_def *wifi_config_service_get_svc_def(void)
 {
     return wifi_svc_defs;
-}
-
-void wifi_config_service_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg)
-{
-    (void)arg;
-    switch (ctxt->op)
-    {
-    case BLE_GATT_REGISTER_OP_SVC:
-        ESP_LOGI(TAG, "Registered WiFi svc, handle=%d", ctxt->svc.handle);
-        break;
-    case BLE_GATT_REGISTER_OP_CHR:
-        ESP_LOGI(TAG, "Registered WiFi chr, def_handle=%d val_handle=%d",
-                 ctxt->chr.def_handle, ctxt->chr.val_handle);
-        break;
-    case BLE_GATT_REGISTER_OP_DSC:
-        ESP_LOGI(TAG, "Registered WiFi dsc, handle=%d", ctxt->dsc.handle);
-        break;
-    default:
-        break;
-    }
-}
-
-void wifi_config_service_subscribe_cb(struct ble_gap_event *event)
-{
-    (void)event;
 }

@@ -32,7 +32,6 @@ static void nimble_host_config_init(void)
 {
     ble_hs_cfg.reset_cb = on_stack_reset;
     ble_hs_cfg.sync_cb = on_stack_sync;
-    ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
     ble_store_config_init();
@@ -58,15 +57,10 @@ static void gatt_timeout_callback(TimerHandle_t xTimer)
 
 static void gatt_server_manager_task(void *param)
 {
-    uint32_t notification = 0;
-    TaskHandle_t task_handle = xTaskGetCurrentTaskHandle();
-
-    event_manager_register_notification(task_handle, EVENT_BIT_BUTTON_PRESSED | EVENT_BIT_WIFI_CONFIG_SAVED);
-
     while (1)
     {
         EventBits_t bits = event_manager_wait_bits(
-            EVENT_BIT_BUTTON_PRESSED | EVENT_BIT_WIFI_CONFIG_SAVED,
+            EVENT_BIT_CONFIG_BUTTON_PRESSED | EVENT_BIT_WIFI_CONFIG_SAVED,
             true,  // Clear on exit
             false, // Wait for any
             portMAX_DELAY);
@@ -88,11 +82,10 @@ static void gatt_server_manager_task(void *param)
                 }
             }
         }
-        else if (bits & EVENT_BIT_BUTTON_PRESSED)
+        else if (bits & EVENT_BIT_CONFIG_BUTTON_PRESSED)
         {
             if (!gatt_server_active)
             {
-                ESP_LOGI(TAG, "Starting GATT server...");
                 start_gatt_server();
                 gatt_server_active = true;
                 event_manager_set_bits(EVENT_BIT_CONFIG_MODE);
@@ -119,7 +112,6 @@ static void gatt_server_manager_task(void *param)
             }
             else
             {
-                ESP_LOGI(TAG, "Stopping GATT server...");
                 stop_gatt_server();
                 gatt_server_active = false;
                 event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
@@ -137,7 +129,6 @@ static void gatt_server_manager_task(void *param)
 
 static void nimble_host_task(void *param)
 {
-    ESP_LOGI(TAG, "nimble host task has been started!");
     nimble_port_run();
     nimble_host_task_handle = NULL;
     vTaskDelete(NULL);
@@ -216,15 +207,15 @@ static void stop_gatt_server(void)
     ESP_LOGI(TAG, "GATT server stopped");
 }
 
-void gatt_server_manager_init(void)
+void ble_manager_init(void)
 {
     xTaskCreate(
         gatt_server_manager_task,
-        "gatt_server_manager",
+        "ble_manager",
         4096,
         NULL,
         5,
         NULL);
 
-    ESP_LOGI(TAG, "GATT server manager initialized");
+    ESP_LOGI(TAG, "BLE manager initialized");
 }

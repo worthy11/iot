@@ -46,13 +46,17 @@ EventBits_t event_manager_set_bits(EventBits_t bits)
     }
 
     EventBits_t result = xEventGroupSetBits(s_event_group, bits);
-
     for (int i = 0; i < s_notification_count; i++)
     {
         if (s_notifications[i].task_handle != NULL &&
             (s_notifications[i].event_bits & bits) != 0)
         {
-            xTaskNotify(s_notifications[i].task_handle, 1, eSetValueWithOverwrite);
+            BaseType_t notify_result = xTaskNotify(s_notifications[i].task_handle, 0x01, eSetBits);
+            if (notify_result != pdPASS)
+            {
+                ESP_LOGW(TAG, "Failed to notify task %p, result: %d",
+                         s_notifications[i].task_handle, notify_result);
+            }
         }
     }
 
@@ -74,7 +78,7 @@ EventBits_t event_manager_clear_bits(EventBits_t bits)
         if (s_notifications[i].task_handle != NULL &&
             (s_notifications[i].event_bits & bits) != 0)
         {
-            xTaskNotify(s_notifications[i].task_handle, 1, eSetValueWithOverwrite);
+            xTaskNotify(s_notifications[i].task_handle, 0x01, eSetBits);
         }
     }
 

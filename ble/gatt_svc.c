@@ -8,7 +8,6 @@
 
 static const char *TAG = "gatt_svc";
 
-/* Build combined service definition array */
 static struct ble_gatt_svc_def gatt_svr_svcs[16]; /* Adjust size as needed */
 static int gatt_svr_svcs_count = 0;
 
@@ -39,16 +38,9 @@ static void build_combined_svc_def(void)
     gatt_svr_svcs[gatt_svr_svcs_count].type = 0;
 }
 
-void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg)
-{
-    battery_service_register_cb(ctxt, arg);
-    wifi_config_service_register_cb(ctxt, arg);
-}
-
 void gatt_svr_subscribe_cb(struct ble_gap_event *event)
 {
     battery_service_subscribe_cb(event);
-    wifi_config_service_subscribe_cb(event);
 }
 
 int gatt_svc_init(void)

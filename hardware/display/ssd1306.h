@@ -6,10 +6,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define OLED_WIDTH 128
-#define OLED_HEIGHT 64
-#define OLED_FRAMEBUFFER_SIZE (OLED_WIDTH * (OLED_HEIGHT / 8))
-
 typedef enum
 {
     SCROLL_NONE,
@@ -18,19 +14,6 @@ typedef enum
     SCROLL_VERTICAL_UP,
     SCROLL_VERTICAL_DOWN,
 } oled_scroll_dir_t;
-
-typedef struct
-{
-    oled_scroll_dir_t direction;
-    uint32_t speed_ms;
-    uint8_t start_page;
-    uint8_t end_page;
-} oled_scroll_state_t;
-
-typedef struct
-{
-    uint8_t buffer[OLED_FRAMEBUFFER_SIZE];
-} oled_buffer_state_t;
 
 void oled_init(i2c_master_dev_handle_t dev);
 
@@ -53,9 +36,9 @@ void oled_draw_text(const char *str, uint8_t font_size, uint16_t rotation);
 void oled_draw_text_inverse(const char *str, uint8_t font_size, uint16_t rotation);
 void oled_draw_bitmap(const uint8_t *data, uint8_t image_width, uint8_t image_height);
 
-void oled_scroll_horizontal(oled_scroll_dir_t direction, uint32_t speed_ms, uint8_t start_page, uint8_t end_page);
-void oled_scroll_vertical(oled_scroll_dir_t direction, uint32_t speed_ms);
-void oled_scroll_diagonal(oled_scroll_dir_t v_direction, oled_scroll_dir_t h_direction, uint32_t speed_ms, uint8_t vertical_offset);
+void oled_scroll_horizontal(oled_scroll_dir_t direction, uint8_t fps, uint8_t start_page, uint8_t end_page);
+void oled_scroll_vertical(oled_scroll_dir_t direction, uint8_t fps);
+void oled_scroll_diagonal(oled_scroll_dir_t v_direction, oled_scroll_dir_t h_direction, uint8_t v_fps, uint8_t h_fps);
 void oled_scroll_line(oled_scroll_dir_t direction);
 void oled_scroll_off(void);
 

@@ -7,7 +7,6 @@
 #include "gap.h"
 #include "common.h"
 #include "gatt_svc.h"
-#include "ssd1306_demo.h"
 #include "host/ble_sm.h"
 #include "host/ble_store.h"
 #include "store/config/ble_store_config.h"
@@ -16,20 +15,19 @@
 #include <string.h>
 #include "esp_random.h"
 
+#include "event_manager.h"
+
 static const char *TAG = "gap";
 
-/* Private function declarations */
 inline static void format_addr(char *addr_str, uint8_t addr[]);
 static void start_advertising(void);
 static int gap_event_handler(struct ble_gap_event *event, void *arg);
 
-/* Private variables */
 static uint8_t own_addr_type;
 static uint8_t addr_val[6] = {0};
 static uint32_t current_passkey = 0;
 static uint16_t passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
-/* Private functions */
 inline static void format_addr(char *addr_str, uint8_t addr[])
 {
     sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X", addr[0], addr[1],
@@ -53,7 +51,7 @@ static int ble_gap_passkey_action_cb(struct ble_gap_event *event, void *arg)
 
         ESP_LOGI(TAG, "Passkey: %06lu", (unsigned long)current_passkey);
 
-        ssd1306_demo_display_passkey(current_passkey);
+        event_manager_set_bits(EVENT_BIT_PASSKEY_DISPLAY);
         struct ble_sm_io io_data = {
             .action = BLE_SM_IOACT_DISP,
             .passkey = current_passkey};
@@ -206,7 +204,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
             if (passkey_conn_handle == event->connect.conn_handle)
             {
-                ssd1306_demo_clear_passkey();
+                event_manager_clear_bits(EVENT_BIT_PASSKEY_DISPLAY);
                 passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
                 current_passkey = 0;
             }
@@ -231,7 +229,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                 ESP_LOGI(TAG, "Connection successfully encrypted and authenticated");
                 if (passkey_conn_handle == event->enc_change.conn_handle)
                 {
-                    ssd1306_demo_clear_passkey();
+                    event_manager_clear_bits(EVENT_BIT_PASSKEY_DISPLAY);
                     passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
                     current_passkey = 0;
                 }
@@ -249,7 +247,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
         if (passkey_conn_handle != BLE_HS_CONN_HANDLE_NONE)
         {
-            ssd1306_demo_clear_passkey();
+            event_manager_clear_bits(EVENT_BIT_PASSKEY_DISPLAY);
             passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             current_passkey = 0;
         }
