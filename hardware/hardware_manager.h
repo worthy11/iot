@@ -29,8 +29,8 @@
 #define GPIO_OLED_SCL 22
 #define GPIO_OLED_SDA 21
 
-// Temperature Sensor (1-Wire) - Add when implemented
-// #define GPIO_TEMP_SENSOR      XX
+// Temperature Sensor (1-Wire)
+#define GPIO_TEMP_SENSOR 4
 
 #include "buttons/config_button.h"
 #include "buttons/feed_button.h"

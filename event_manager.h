@@ -17,6 +17,11 @@
 #define EVENT_BIT_BATTERY_LOW BIT9           // Battery level is low
 #define EVENT_BIT_DISPLAY_STATUS BIT10
 
+#define EVENT_TEMP_SHIFT       11 //0..63 bits 11..16
+#define EVENT_TEMP_BITS        6 
+#define EVENT_TEMP_MASK        (((1U << EVENT_TEMP_BITS) - 1) << EVENT_TEMP_SHIFT) //temperature 
+
+
 EventGroupHandle_t event_manager_get_group(void);
 
 void event_manager_init(void);

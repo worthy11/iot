@@ -4,7 +4,8 @@
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
+#include "event_manager.h"
+#include <math.h>
 static const char *TAG = "temp_sensor";
 static gpio_num_t s_pin = GPIO_NUM_4; // default D4
 
@@ -77,6 +78,12 @@ static void temp_log_task(void *arg) {
 	while (1) {
 		if (temp_sensor_read_celsius(&c)) {
 			ESP_LOGI(TAG, "Temperature: %.2f C", c);
+			int iv = (int)lroundf(c);
+			if (iv < 0) iv = 0;
+			if (iv > 63) iv = 63;
+			EventBits_t vbits = ((EventBits_t)iv << EVENT_TEMP_SHIFT) & EVENT_TEMP_MASK;
+			// mqtt must clear these bits on reading 
+			event_manager_set_bits(vbits);
 		} else {
 			ESP_LOGW(TAG, "Temperature read failed");
 		}
