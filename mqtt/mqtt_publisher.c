@@ -41,21 +41,22 @@ static char cmd_topic[64];
 
 static void temperature_publish_task(void *param)
 {
-    int last_value = -999; 
+    float last_value = -999; 
     while (1)
     {
         EventBits_t bits = event_manager_get_bits();
         if (g_client != NULL && 
-            (bits & EVENT_BIT_WIFI_STATUS) &&
+            (bits & (EVENT_BIT_WIFI_STATUS)) &&
             temperature_enabled)
         {
-            int value = (bits & EVENT_TEMP_MASK) >> EVENT_TEMP_SHIFT;
-
+            aquarium_data_t data;
+            aquarium_data_get(&data);
+            float value = data.temperature;
             if (value != last_value)
             {
                 char msg[16];
                 last_value = value;
-                snprintf(msg, sizeof(msg), "%d", value);
+                snprintf(msg, sizeof(msg), "%.2f", value);
                 int msg_id = esp_mqtt_client_enqueue(g_client, temperature_topic, msg, 0, 1, 0, true);
                 ESP_LOGI(TAG, "Temp changed, enqueue -> \"%s\" msg_id=%d", msg, msg_id);
             }
