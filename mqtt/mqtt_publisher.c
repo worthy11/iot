@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
 #include <time.h>
@@ -28,6 +29,8 @@ static const char *user_id = "f8e87394";
 
 static int temperature_interval_sec = 3;
 static int ph_interval_sec = 3;
+static bool temperature_enabled = false;
+static bool ph_enabled = false;
 static esp_mqtt_client_handle_t g_client = NULL;
 
 static char device_mac[18];
@@ -43,7 +46,8 @@ static void temperature_publish_task(void *param)
     {
         EventBits_t bits = event_manager_get_bits();
         if (g_client != NULL && 
-            (bits & EVENT_BIT_WIFI_STATUS))
+            (bits & EVENT_BIT_WIFI_STATUS) &&
+            temperature_enabled)
         {
             int value = (bits & EVENT_TEMP_MASK) >> EVENT_TEMP_SHIFT;
 
@@ -67,7 +71,8 @@ static void ph_publish_task(void *param)
     {
         EventBits_t bits = event_manager_get_bits();
         if (g_client != NULL && 
-            (bits & EVENT_BIT_WIFI_STATUS))
+            (bits & EVENT_BIT_WIFI_STATUS) &&
+            ph_enabled)
         {
             aquarium_data_t data;
             aquarium_data_get(&data);
@@ -107,54 +112,51 @@ static void feed_task(void *param)
             ESP_LOGI(TAG, "Feed successful, Enqueue -> \"%s\" msg_id=%d", msg, msg_id);
         }
     }
+}
 
-// static void process_command(const char *cmd, int len)
-// {
-//     char buf[32];
-//     if (len >= sizeof(buf))
-//         len = sizeof(buf) - 1;
-//     memcpy(buf, cmd, len);
-//     buf[len] = 0;
-//
-//     int value;
-//     if (sscanf(buf, "temperature %d", &value) == 1)
-//     {
-//         temperature_interval_sec = value;
-//         ESP_LOGW(TAG, "Temperature interval set to %d seconds", temperature_interval_sec);
-//         if (!temperature_enabled)
-//         {
-//             temperature_enabled = true;
-//             ESP_LOGI(TAG, "Start publishing temperature data");
-//         }
-//     }
-//     else if (sscanf(buf, "ph %d", &value) == 1)
-//     {
-//         ph_interval_sec = value;
-//         ESP_LOGW(TAG, "pH interval set to %d seconds", ph_interval_sec);
-//         if (!ph_enabled)
-//         {
-//             ph_enabled = true;
-//             ESP_LOGI(TAG, "Start publishing pH data");
-//         }
-//     }
-//     else if (strcmp(buf, "feed") == 0)
-//     {
-//         feed_enabled = true;
-//         ESP_LOGI(TAG, "Feeding started");
-//         feed_task();
-//         feed_enabled = false;
-//     }
-//     else if (strcmp(buf, "stop") == 0)
-//     {
-//         temperature_enabled = false;
-//         ph_enabled = false;
-//         ESP_LOGI(TAG, "Publishing stopped");
-//     }
-//     else
-//     {
-//         ESP_LOGW(TAG, "Unknown command: %s", buf);
-//     }
-// }
+static void process_command(const char *cmd, int len)
+{
+    char buf[32];
+    if (len >= sizeof(buf))
+        len = sizeof(buf) - 1;
+    memcpy(buf, cmd, len);
+    buf[len] = 0;
+
+    int value;
+    if (sscanf(buf, "temperature %d", &value) == 1)
+    {
+        temperature_interval_sec = value;
+        ESP_LOGW(TAG, "Temperature interval set to %d seconds", temperature_interval_sec);
+        if (!temperature_enabled) {
+            temperature_enabled = true;
+            ESP_LOGI(TAG, "Start publishing temperature data");
+        }
+    }
+    else if (sscanf(buf, "ph %d", &value) == 1)
+    {
+        ph_interval_sec = value;
+        ESP_LOGW(TAG, "pH interval set to %d seconds", ph_interval_sec);
+        if (!ph_enabled) {
+            ph_enabled = true;
+            ESP_LOGI(TAG, "Start publishing pH data");
+        }
+    }
+    else if (strcmp(buf, "feed") == 0)
+    {
+        ESP_LOGI(TAG, "Feed requested -> scheduling");
+        event_manager_set_bits(EVENT_BIT_FEED_SCHEDULED);
+    }
+    else if (strcmp(buf, "stop") == 0)
+    {
+        temperature_enabled = false;
+        ph_enabled = false;
+        ESP_LOGI(TAG, "Publishing stopped");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Unknown command: %s", buf);
+    }
+}
 
 static esp_err_t get_mac_address_string(char *mac_str)
 {
@@ -173,30 +175,30 @@ static esp_err_t get_mac_address_string(char *mac_str)
     return ESP_OK;
 }
 
-// static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
-//                                int32_t event_id, void *event_data)
-// {
-//     esp_mqtt_event_handle_t event = event_data;
-//     g_client = event->client;
-//
-//     switch (event_id)
-//     {
-//     case MQTT_EVENT_CONNECTED:
-//         ESP_LOGI(TAG, "MQTT connected");
-//         esp_mqtt_client_subscribe(g_client, cmd_topic, 1);
-//         break;
-//
-//     case MQTT_EVENT_DATA:
-//         ESP_LOGI(TAG, "CMD [%.*s] -> [%.*s]",
-//                  event->topic_len, event->topic,
-//                  event->data_len, event->data);
-//         process_command(event->data, event->data_len);
-//         break;
-//
-//     default:
-//         break;
-//     }
-// }
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
+                               int32_t event_id, void *event_data)
+{
+    esp_mqtt_event_handle_t event = event_data;
+    g_client = event->client;
+
+    switch (event_id)
+    {
+    case MQTT_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "MQTT connected");
+        esp_mqtt_client_subscribe(g_client, cmd_topic, 1);
+        break;
+
+    case MQTT_EVENT_DATA:
+        ESP_LOGI(TAG, "CMD [%.*s] -> [%.*s]",
+                 event->topic_len, event->topic,
+                 event->data_len, event->data);
+        process_command(event->data, event->data_len);
+        break;
+
+    default:
+        break;
+    }
+}
 
 static void initialize_sntp(void)
 {
@@ -221,7 +223,7 @@ static void mqtt_app_start(void)
     snprintf(temperature_topic, sizeof(temperature_topic), "%s/%s/data/temperature", user_id, device_mac);
     snprintf(ph_topic, sizeof(ph_topic), "%s/%s/data/ph", user_id, device_mac);
     snprintf(feed_topic, sizeof(feed_topic), "%s/%s/data/feed", user_id, device_mac);
-    // snprintf(cmd_topic, sizeof(cmd_topic), "%s/%s/cmd", user_id, device_mac);
+    snprintf(cmd_topic, sizeof(cmd_topic), "%s/%s/cmd", user_id, device_mac);
 
     initialize_sntp();
 
