@@ -131,10 +131,9 @@ static void sensor_measurement_task(void *pvParameters)
         if (bits & EVENT_BIT_MEASURE_TEMP)
         {
             ESP_LOGI(TAG, "Measuring temperature on request");
-            // TODO: Read temperature sensor when implemented
-            // float temp = temp_sensor_read();
-            // aquarium_data_update_temperature(temp);
-            ESP_LOGW(TAG, "Temperature sensor not yet implemented");
+            float temp = temp_sensor_read();
+            ESP_LOGI(TAG, "measured temp is: %.2f", temp);
+            aquarium_data_update_temperature(temp);
         }
 
         if (bits & EVENT_BIT_MEASURE_PH)

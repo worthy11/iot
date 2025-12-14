@@ -23,9 +23,6 @@
 #define EVENT_BIT_MEASURE_TEMP BIT15         // Request temperature measurement
 #define EVENT_BIT_MEASURE_PH BIT16           // Request pH measurement
 
-#define EVENT_TEMP_SHIFT       11 //0..63 bits 11..16
-#define EVENT_TEMP_BITS        6 
-#define EVENT_TEMP_MASK        (((1U << EVENT_TEMP_BITS) - 1) << EVENT_TEMP_SHIFT) //temperature 
 
 
 EventGroupHandle_t event_manager_get_group(void);

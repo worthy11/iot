@@ -72,21 +72,11 @@ static uint8_t ow_read_byte(void) {
 	}
 	return v;
 }
-static void temp_log_task(void *arg) {
+static void temp_task(void *arg) {
 	uint32_t interval_ms = (uint32_t)(uintptr_t)arg;
 	float c;
 	while (1) {
-		if (temp_sensor_read_celsius(&c)) {
-			ESP_LOGI(TAG, "Temperature: %.2f C", c);
-			int iv = (int)lroundf(c);
-			if (iv < 0) iv = 0;
-			if (iv > 63) iv = 63;
-			EventBits_t vbits = ((EventBits_t)iv << EVENT_TEMP_SHIFT) & EVENT_TEMP_MASK;
-			// mqtt must clear these bits on reading 
-			event_manager_set_bits(vbits);
-		} else {
-			ESP_LOGW(TAG, "Temperature read failed");
-		}
+		event_manager_set_bits(EVENT_BIT_MEASURE_TEMP);
 		vTaskDelay(pdMS_TO_TICKS(interval_ms));
 	}
 }
@@ -106,14 +96,15 @@ void temp_sensor_init(gpio_num_t pin) {
 	ESP_LOGI(TAG, "DS18B20 presence: %s", present ? "yes" : "no");
 
     uint32_t interval_ms = 10000;
-	xTaskCreate(temp_log_task, "temp_log", 2048, (void *)(uintptr_t)interval_ms, 5, NULL);
+	xTaskCreate(temp_task, "temp_log", 2048, (void *)(uintptr_t)interval_ms, 5, NULL);
 }
 
-bool temp_sensor_read_celsius(float *out_celsius) {
-	if (!out_celsius) return false;
+float temp_sensor_read() 
+{
+	float out_celsius;
 	if (!ow_reset()) {
 		ESP_LOGW(TAG, "No presence pulse");
-		return false;
+		return NAN;
 	}
 	// Skip ROM (single device) then Convert T
 	ow_write_byte(0xCC); // SKIP ROM
@@ -125,7 +116,7 @@ bool temp_sensor_read_celsius(float *out_celsius) {
 
 	if (!ow_reset()) {
 		ESP_LOGW(TAG, "No presence after convert");
-		return false;
+		return NAN;
 	}
 	ow_write_byte(0xCC); // SKIP ROM
 	ow_write_byte(0xBE); // READ SCRATCHPAD
@@ -135,10 +126,10 @@ bool temp_sensor_read_celsius(float *out_celsius) {
 
 	int16_t raw = (int16_t)((temp_h << 8) | temp_l);
 	// 12-bit resolution: each LSB = 0.0625°C
-	*out_celsius = (float)raw * 0.0625f;
+	out_celsius = (float)raw * 0.0625f;
 	// Read remaining bytes to complete transaction (optional)
 	for (int i = 0; i < 7; i++) (void)ow_read_byte();
-	return true;
+	return out_celsius;
 }
 
 
