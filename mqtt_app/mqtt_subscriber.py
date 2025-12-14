@@ -63,7 +63,7 @@ class IoTApp:
         # Temperature Control
         cmd_temp = ttk.Frame(control_frame)
         cmd_temp.pack(fill=tk.X, pady=5)
-        ttk.Label(cmd_temp, text="Set Temp:", width=12).pack(side=tk.LEFT)
+        ttk.Label(cmd_temp, text="Set Temp Interval:", width=18).pack(side=tk.LEFT)
         self.set_temp_var = tk.StringVar(value="5")
         ttk.Entry(cmd_temp, textvariable=self.set_temp_var, width=10).pack(side=tk.LEFT, padx=5)
         ttk.Button(cmd_temp, text="Send", command=self.send_temp).pack(side=tk.LEFT)
@@ -71,7 +71,7 @@ class IoTApp:
         # pH Control
         cmd_ph = ttk.Frame(control_frame)
         cmd_ph.pack(fill=tk.X, pady=5)
-        ttk.Label(cmd_ph, text="Set pH:", width=12).pack(side=tk.LEFT)
+        ttk.Label(cmd_ph, text="Set pH Interval:", width=18).pack(side=tk.LEFT)
         self.set_ph_var = tk.StringVar(value="5")
         ttk.Entry(cmd_ph, textvariable=self.set_ph_var, width=10).pack(side=tk.LEFT, padx=5)
         ttk.Button(cmd_ph, text="Send", command=self.send_ph).pack(side=tk.LEFT)
@@ -82,7 +82,6 @@ class IoTApp:
         btn_frame = ttk.Frame(control_frame)
         btn_frame.pack(fill=tk.X)
         ttk.Button(btn_frame, text="FEED", command=self.send_feed).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
-        ttk.Button(btn_frame, text="STOP", command=self.send_stop).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
 
         # --- STATUS BAR ---
         self.status_var = tk.StringVar(value="Connecting to MQTT...")
