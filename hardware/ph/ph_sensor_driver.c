@@ -3,8 +3,6 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include <stdlib.h>
 
 static const char *TAG = "ph_sensor";
@@ -91,22 +89,6 @@ static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_att
     return calibrated;
 }
 
-static void ph_sensor_task(void *pvParameters)
-{
-    ESP_LOGI(TAG, "pH sensor task started");
-
-    while (1)
-    {
-        float ph_value = ph_sensor_read_ph();
-        float temp_comp_mv = ph_sensor_read_temp_comp_mv();
-
-        // Note: ADC readings are logged in ph_sensor_read_ph() at DEBUG level
-        ESP_LOGI(TAG, "pH: %.2f, Temp comp: %.1f mV", ph_value, temp_comp_mv);
-
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Read every 1 second
-    }
-}
-
 void ph_sensor_init(gpio_num_t ph_output_gpio, gpio_num_t temp_comp_gpio)
 {
     if (adc_initialized)
@@ -143,15 +125,6 @@ void ph_sensor_init(gpio_num_t ph_output_gpio, gpio_num_t temp_comp_gpio)
     adc_calibration_init(ADC_UNIT_1, temp_comp_channel, ADC_ATTEN_DB_11, &temp_comp_cali_handle);
 
     adc_initialized = true;
-
-    // Create task to read pH sensor every 1 second
-    xTaskCreate(
-        ph_sensor_task,
-        "ph_sensor_task",
-        2048,
-        NULL,
-        5,
-        NULL);
 
     ESP_LOGI(TAG, "pH sensor driver initialized (GPIO %d: pH output, GPIO %d: temp comp)",
              ph_output_gpio, temp_comp_gpio);

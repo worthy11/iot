@@ -15,7 +15,13 @@
 #define EVENT_BIT_FEED_SUCCESSFUL BIT6       // Button was pressed
 #define EVENT_BIT_FEED_FAILED BIT7           // Button was pressed
 #define EVENT_BIT_BATTERY_LOW BIT9           // Battery level is low
-#define EVENT_BIT_DISPLAY_STATUS BIT10
+#define EVENT_BIT_DISPLAY_STATUS BIT10       // Display on/off
+#define EVENT_BIT_DISPLAY_LEFT BIT11         // Display navigation left
+#define EVENT_BIT_DISPLAY_RIGHT BIT12        // Display navigation right
+#define EVENT_BIT_DISPLAY_CONFIRM BIT13      // Display navigation confirm
+#define EVENT_BIT_DISPLAY_WAKE BIT14         // Display wake up
+#define EVENT_BIT_MEASURE_TEMP BIT15         // Request temperature measurement
+#define EVENT_BIT_MEASURE_PH BIT16           // Request pH measurement
 
 #define EVENT_TEMP_SHIFT       11 //0..63 bits 11..16
 #define EVENT_TEMP_BITS        6 

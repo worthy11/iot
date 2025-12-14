@@ -1,10 +1,7 @@
 #include "motor_driver.h"
 #include "driver/gpio.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
-#include "event_manager.h"
 
 static const char *TAG = "motor_driver";
 
@@ -71,24 +68,10 @@ static void motor_rotate_steps(int steps)
     ESP_LOGI(TAG, "Motor rotation complete");
 }
 
-static void motor_task(void *pvParameters)
+void motor_rotate_portion(void)
 {
-    ESP_LOGI(TAG, "Motor task started");
-
-    while (1)
-    {
-        EventBits_t bits = event_manager_wait_bits(
-            EVENT_BIT_FEED_SCHEDULED,
-            true,  // Clear on exit
-            false, // Wait for any
-            portMAX_DELAY);
-
-        if (bits & EVENT_BIT_FEED_SCHEDULED)
-        {
-            ESP_LOGI(TAG, "Feed scheduled, rotating motor 30 degrees");
-            motor_rotate_steps(STEPS_PER_PORTION);
-        }
-    }
+    ESP_LOGI(TAG, "Rotating motor one portion");
+    motor_rotate_steps(STEPS_PER_PORTION);
 }
 
 void motor_driver_init(gpio_num_t in1, gpio_num_t in2, gpio_num_t in3, gpio_num_t in4)
@@ -110,14 +93,6 @@ void motor_driver_init(gpio_num_t in1, gpio_num_t in2, gpio_num_t in3, gpio_num_
     gpio_config(&io_conf);
 
     motor_stop();
-
-    xTaskCreate(
-        motor_task,
-        "motor_task",
-        2048,
-        NULL,
-        5,
-        NULL);
 
     ESP_LOGI(TAG, "Motor driver initialized (GPIOs: %d, %d, %d, %d)",
              in1, in2, in3, in4);

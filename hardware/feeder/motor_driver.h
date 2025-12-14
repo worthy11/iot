@@ -8,5 +8,6 @@
 #define STEPS_PER_PORTION 512 // 8 portions
 
 void motor_driver_init(gpio_num_t in1, gpio_num_t in2, gpio_num_t in3, gpio_num_t in4);
+void motor_rotate_portion(void);
 
 #endif // MOTOR_DRIVER_H

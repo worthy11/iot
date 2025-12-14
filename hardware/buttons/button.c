@@ -15,9 +15,11 @@ static void button_task(void *pvParameters)
     bool current_state;
     bool button_pressed = false;
     bool long_press_detected = false;
+    bool long_press_event_sent = false; // Track if we've already sent the long press event
     TickType_t stable_time = 0;
     TickType_t press_start_time = 0;
     TickType_t last_press_time = 0;
+    TickType_t release_stable_time = 0;
 
     ESP_LOGI(TAG, "Button task started for %s (GPIO %d)", config->name, config->gpio);
 
@@ -29,6 +31,12 @@ static void button_task(void *pvParameters)
         if (last_state == 1 && current_state == 0)
         {
             stable_time = current_time;
+            release_stable_time = 0;
+        }
+
+        if (last_state == 0 && current_state == 1)
+        {
+            release_stable_time = current_time;
         }
 
         if (current_state == 0 && !button_pressed &&
@@ -40,34 +48,42 @@ static void button_task(void *pvParameters)
                 press_start_time = current_time;
                 button_pressed = true;
                 long_press_detected = false;
+                long_press_event_sent = false;
             }
         }
 
-        if (button_pressed && current_state == 0 && !long_press_detected &&
+        if (button_pressed && current_state == 0 && !long_press_event_sent &&
             config->long_press_ms > 0 && config->long_press_event_bit != 0)
         {
             if ((current_time - press_start_time) >= pdMS_TO_TICKS(config->long_press_ms))
             {
                 long_press_detected = true;
-                ESP_LOGI(TAG, "%s: Long press detected", config->name);
+                long_press_event_sent = true; // Prevent multiple events
                 event_manager_set_bits(config->long_press_event_bit);
             }
         }
 
-        if (last_state == 0 && current_state == 1 && button_pressed)
+        if (current_state == 1 && button_pressed &&
+            release_stable_time > 0 &&
+            (current_time - release_stable_time) >= pdMS_TO_TICKS(config->debounce_ms))
         {
             if (!long_press_detected && config->press_event_bit != 0)
             {
-                ESP_LOGI(TAG, "%s: Short press detected", config->name);
                 event_manager_set_bits(config->press_event_bit);
+                if (config->press_event_bit & (EVENT_BIT_DISPLAY_LEFT | EVENT_BIT_DISPLAY_RIGHT | EVENT_BIT_DISPLAY_CONFIRM))
+                {
+                    event_manager_set_bits(EVENT_BIT_DISPLAY_WAKE);
+                }
             }
 
             button_pressed = false;
             long_press_detected = false;
+            long_press_event_sent = false;
+            release_stable_time = 0;
         }
 
         last_state = current_state;
-        vTaskDelay(pdMS_TO_TICKS(10)); // Poll every 10ms
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 

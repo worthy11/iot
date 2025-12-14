@@ -27,7 +27,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     event_manager_init();
-    // wifi_manager_init();
+    wifi_manager_init();
     ble_manager_init();
     hardware_init();
 }

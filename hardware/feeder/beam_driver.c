@@ -6,8 +6,6 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
-#include "event_manager.h"
-
 static const char *TAG = "break_beam";
 static QueueHandle_t gpio_evt_queue = NULL;
 static gpio_num_t beam_gpio = GPIO_NUM_NC;
@@ -26,51 +24,46 @@ static void IRAM_ATTR beam_isr(void *arg)
     }
 }
 
-static void break_beam_task(void *arg)
+bool break_beam_monitor(uint32_t timeout_ms)
 {
     uint32_t io_level;
     bool success = false;
 
-    while (1)
+    if (gpio_evt_queue == NULL)
     {
-        EventBits_t bits = event_manager_wait_bits(
-            EVENT_BIT_FEED_SCHEDULED,
-            true,  // Clear on exit
-            false, // Wait for any
-            portMAX_DELAY);
+        ESP_LOGE(TAG, "Beam driver not initialized");
+        return false;
+    }
 
-        if (bits & EVENT_BIT_FEED_SCHEDULED)
+    ESP_LOGI(TAG, "Starting beam monitoring (timeout: %lu ms)", timeout_ms);
+
+    TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+    TickType_t start_time = xTaskGetTickCount();
+
+    while ((xTaskGetTickCount() - start_time) < timeout_ticks)
+    {
+        TickType_t remaining_time = timeout_ticks - (xTaskGetTickCount() - start_time);
+        if (xQueueReceive(gpio_evt_queue, &io_level, remaining_time) == pdTRUE)
         {
-            ESP_LOGI(TAG, "Starting monitoring...");
-            success = false;
-            TickType_t timeout_ticks = pdMS_TO_TICKS(15000);
-            TickType_t start_time = xTaskGetTickCount();
-
-            while ((xTaskGetTickCount() - start_time) < timeout_ticks)
+            if (io_level == 0)
             {
-                TickType_t remaining_time = timeout_ticks - (xTaskGetTickCount() - start_time);
-                if (xQueueReceive(gpio_evt_queue, &io_level, remaining_time) == pdTRUE)
-                {
-                    if (io_level == 0)
-                    {
-                        ESP_LOGI(TAG, "Boom");
-                        success = true;
-                    }
-                }
+                ESP_LOGI(TAG, "Beam break detected - food has fallen");
+                success = true;
+                break;
             }
-
-            if (success)
-            {
-                event_manager_set_bits(EVENT_BIT_FEED_SUCCESSFUL);
-            }
-            else
-            {
-                event_manager_set_bits(EVENT_BIT_FEED_FAILED);
-            }
-
-            ESP_LOGI(TAG, "Stopping monitoring...");
         }
     }
+
+    if (success)
+    {
+        ESP_LOGI(TAG, "Beam monitoring completed - success");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Beam monitoring completed - timeout (no beam break)");
+    }
+
+    return success;
 }
 
 void break_beam_init(gpio_num_t gpio)
@@ -90,6 +83,5 @@ void break_beam_init(gpio_num_t gpio)
     gpio_install_isr_service(0);
     gpio_isr_handler_add(gpio, beam_isr, NULL);
 
-    xTaskCreate(break_beam_task, "break_beam_task", 2048, NULL, 5, NULL);
     ESP_LOGI(TAG, "Break beam driver initialized (GPIO %d)", gpio);
 }

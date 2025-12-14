@@ -424,9 +424,28 @@ static void oled_draw_char(char c, uint8_t font_size, uint16_t rotation, const u
         {
             if (xSemaphoreTake(framebuffer_mutex, portMAX_DELAY) == pdTRUE)
             {
-                for (uint8_t col = 0; col < char_width && (cursor_col + col) < OLED_WIDTH; col++)
+                uint8_t page_start_row = page_num * 8;
+                uint8_t page_end_row = page_start_row + 7;
+                uint8_t char_start_row = cursor_row;
+                uint8_t char_end_row = cursor_row + char_height - 1;
+
+                if (char_end_row >= page_start_row && char_start_row <= page_end_row)
                 {
-                    framebuffer[page_num][cursor_col + col] = char_data[col];
+                    uint8_t bit_mask = 0;
+                    for (uint8_t bit = 0; bit < 8; bit++)
+                    {
+                        uint8_t absolute_row = page_start_row + bit;
+                        if (absolute_row >= char_start_row && absolute_row <= char_end_row)
+                        {
+                            bit_mask |= (1 << bit);
+                        }
+                    }
+
+                    for (uint8_t col = 0; col < char_width && (cursor_col + col) < OLED_WIDTH; col++)
+                    {
+                        framebuffer[page_num][cursor_col + col] &= ~bit_mask;
+                        framebuffer[page_num][cursor_col + col] |= (char_data[col] & bit_mask);
+                    }
                 }
                 xSemaphoreGive(framebuffer_mutex);
             }

@@ -28,6 +28,11 @@ static uint8_t addr_val[6] = {0};
 static uint32_t current_passkey = 0;
 static uint16_t passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
+uint32_t gap_get_current_passkey(void)
+{
+    return current_passkey;
+}
+
 inline static void format_addr(char *addr_str, uint8_t addr[])
 {
     sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X", addr[0], addr[1],

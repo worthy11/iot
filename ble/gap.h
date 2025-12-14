@@ -19,5 +19,6 @@
 /* Public function declarations */
 void adv_init(void);
 int gap_init(void);
+uint32_t gap_get_current_passkey(void); // Get current passkey for display
 
 #endif // GAP_SVC_H
