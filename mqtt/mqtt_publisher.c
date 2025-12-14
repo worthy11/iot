@@ -20,6 +20,12 @@
 #include "esp_crt_bundle.h"
 #include "esp_sntp.h"
 
+#define EVENT_BIT_PUBLISH_TEMP BIT17
+#define EVENT_BIT_PUBLISH_PH   BIT18
+
+static TimerHandle_t temp_timer;
+static TimerHandle_t ph_timer;
+
 // #define BROKER_URL "mqtt://10.72.5.219:1883"
 #define BROKER_URL "mqtt://10.88.236.219:1883"
 
@@ -39,79 +45,110 @@ static char ph_topic[64];
 static char feed_topic[64];
 static char cmd_topic[64];
 
+static void temp_timer_cb(TimerHandle_t xTimer)
+{
+    event_manager_set_bits(EVENT_BIT_PUBLISH_TEMP);
+}
+
+static void ph_timer_cb(TimerHandle_t xTimer)
+{
+    event_manager_set_bits(EVENT_BIT_PUBLISH_PH);
+}
+
 static void temperature_publish_task(void *param)
 {
-    float last_value = -999; 
+    float last_value = -999.0f;
+
     while (1)
     {
-        EventBits_t bits = event_manager_get_bits();
-        if (g_client != NULL && 
-            (bits & (EVENT_BIT_WIFI_STATUS)) &&
-            temperature_enabled)
+        event_manager_wait_bits(
+            EVENT_BIT_MEASURE_TEMP | EVENT_BIT_WIFI_STATUS,
+            pdTRUE,
+            pdTRUE,
+            portMAX_DELAY
+        );
+
+        if (!temperature_enabled || g_client == NULL)
+            continue;
+
+        aquarium_data_t data;
+        aquarium_data_get(&data);
+
+        float value = data.temperature;
+        if (value != last_value)
         {
-            aquarium_data_t data;
-            aquarium_data_get(&data);
-            float value = data.temperature;
-            if (value != last_value)
-            {
-                char msg[16];
-                last_value = value;
-                snprintf(msg, sizeof(msg), "%.2f", value);
-                int msg_id = esp_mqtt_client_enqueue(g_client, temperature_topic, msg, 0, 1, 0, true);
-                ESP_LOGI(TAG, "Temp changed, enqueue -> \"%s\" msg_id=%d", msg, msg_id);
-            }
+            last_value = value;
+            char msg[16];
+            snprintf(msg, sizeof(msg), "%.2f", value);
+            esp_mqtt_client_enqueue(
+                g_client, temperature_topic, msg, 0, 1, 0, true
+            );
+            ESP_LOGI(TAG, "Temp changed -> %s", msg);
         }
-        vTaskDelay(temperature_interval_sec * 1000 / portTICK_PERIOD_MS);
     }
 }
 
 static void ph_publish_task(void *param)
 {
-    float last_value = -999.0;
+    float last_value = -999.0f;
+
     while (1)
     {
-        EventBits_t bits = event_manager_get_bits();
-        if (g_client != NULL && 
-            (bits & EVENT_BIT_WIFI_STATUS) &&
-            ph_enabled)
-        {
-            aquarium_data_t data;
-            aquarium_data_get(&data);
-            float value = data.ph;
+        event_manager_wait_bits(
+            EVENT_BIT_MEASURE_PH | EVENT_BIT_WIFI_STATUS,
+            true,          
+            false,         
+            portMAX_DELAY 
+        );
 
-            if (value != last_value)
-            {
-                char msg[16];
-                last_value = value;
-                snprintf(msg, sizeof(msg), "%.2f", value);
-                int msg_id = esp_mqtt_client_enqueue(g_client, ph_topic, msg, 0, 1, 0, true);
-                ESP_LOGI(TAG, "pH changed, enqueue -> \"%s\" msg_id=%d", msg, msg_id);
-            }
+        if (!ph_enabled || g_client == NULL)
+            continue;
+
+        aquarium_data_t data;
+        aquarium_data_get(&data);
+
+        float value = data.ph;
+        if (value != last_value)
+        {
+            last_value = value;
+            char msg[16];
+            snprintf(msg, sizeof(msg), "%.2f", value);
+            esp_mqtt_client_enqueue(
+                g_client, ph_topic, msg, 0, 1, 0, true
+            );
+            ESP_LOGI(TAG, "pH changed -> %s", msg);
         }
-        vTaskDelay(ph_interval_sec * 1000 / portTICK_PERIOD_MS);
     }
 }
+
 
 static void feed_task(void *param)
 {
     while (1)
     {
-        EventBits_t bits = xEventGroupWaitBits(event_manager_get_group(),
-                                               EVENT_BIT_FEED_SUCCESSFUL,
-                                               pdTRUE,
-                                               pdFALSE,
-                                               portMAX_DELAY);
+        EventBits_t bits = xEventGroupWaitBits(
+            event_manager_get_group(),
+            EVENT_BIT_FEED_SUCCESSFUL | EVENT_BIT_WIFI_STATUS,
+            pdTRUE,
+            pdTRUE,
+            portMAX_DELAY
+        );
 
-        if ((bits & EVENT_BIT_FEED_SUCCESSFUL) && g_client != NULL && (event_manager_get_bits() & EVENT_BIT_WIFI_STATUS))
-        {
-            char msg[32];
-            time_t now = time(NULL);
-            struct tm *timeinfo = localtime(&now);
-            snprintf(msg, sizeof(msg), "%02d:%02d:%02d",
-                     timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-            int msg_id = esp_mqtt_client_enqueue(g_client, feed_topic, msg, 0, 1, 0, true);
-            ESP_LOGI(TAG, "Feed successful, Enqueue -> \"%s\" msg_id=%d", msg, msg_id);
-        }
+        if (g_client == NULL)
+            continue;
+
+        char msg[32];
+        time_t now = time(NULL);
+        struct tm *timeinfo = localtime(&now);
+
+        snprintf(msg, sizeof(msg), "%02d:%02d:%02d",
+                 timeinfo->tm_hour,
+                 timeinfo->tm_min,
+                 timeinfo->tm_sec);
+
+        esp_mqtt_client_enqueue(
+            g_client, feed_topic, msg, 0, 1, 0, true
+        );
     }
 }
 
@@ -124,38 +161,80 @@ static void process_command(const char *cmd, int len)
     buf[len] = 0;
 
     int value;
-    if (sscanf(buf, "temperature %d", &value) == 1)
+
+    if (sscanf(buf, "temperature %d", &value) == 1 && value > 0)
     {
         temperature_interval_sec = value;
-        ESP_LOGW(TAG, "Temperature interval set to %d seconds", temperature_interval_sec);
-        if (!temperature_enabled) {
-            temperature_enabled = true;
-            ESP_LOGI(TAG, "Start publishing temperature data");
-        }
+        temperature_enabled = true;
+
+        xTimerStop(temp_timer, 0);
+        xTimerChangePeriod(
+            temp_timer,
+            pdMS_TO_TICKS(value * 1000),
+            0
+        );
+        xTimerStart(temp_timer, 0);
+
+        ESP_LOGI(TAG, "Temperature publish interval = %d s", value);
+        return;
     }
-    else if (sscanf(buf, "ph %d", &value) == 1)
+
+    if (sscanf(buf, "ph %d", &value) == 1 && value > 0)
     {
         ph_interval_sec = value;
-        ESP_LOGW(TAG, "pH interval set to %d seconds", ph_interval_sec);
-        if (!ph_enabled) {
-            ph_enabled = true;
-            ESP_LOGI(TAG, "Start publishing pH data");
-        }
+        ph_enabled = true;
+
+        xTimerStop(ph_timer, 0);
+        xTimerChangePeriod(
+            ph_timer,
+            pdMS_TO_TICKS(value * 1000),
+            0
+        );
+        xTimerStart(ph_timer, 0);
+
+        ESP_LOGI(TAG, "pH publish interval = %d s", value);
+        return;
     }
-    else if (strcmp(buf, "feed") == 0)
+
+    if (strcmp(buf, "feed") == 0)
     {
-        ESP_LOGI(TAG, "Feed requested -> scheduling");
+        ESP_LOGI(TAG, "Feed requested");
         event_manager_set_bits(EVENT_BIT_FEED_SCHEDULED);
+        return;
     }
-    else if (strcmp(buf, "stop") == 0)
+
+    ESP_LOGW(TAG, "Unknown command: %s", buf);
+}
+
+static void mqtt_event_handler(void *handler_args,
+                               esp_event_base_t base,
+                               int32_t event_id,
+                               void *event_data)
+{
+    esp_mqtt_event_handle_t event = event_data;
+    g_client = event->client;
+
+    switch (event_id)
     {
-        temperature_enabled = false;
-        ph_enabled = false;
-        ESP_LOGI(TAG, "Publishing stopped");
-    }
-    else
-    {
-        ESP_LOGW(TAG, "Unknown command: %s", buf);
+        case MQTT_EVENT_CONNECTED:
+            ESP_LOGI(TAG, "MQTT connected");
+            esp_mqtt_client_subscribe(g_client, cmd_topic, 1);
+            break;
+
+        case MQTT_EVENT_DATA:
+            if (event->topic_len == strlen(cmd_topic) &&
+                strncmp(event->topic, cmd_topic, event->topic_len) == 0)
+            {
+                ESP_LOGI(TAG, "CMD -> [%.*s]",
+                         event->data_len,
+                         event->data);
+
+                process_command(event->data, event->data_len);
+            }
+            break;
+
+        default:
+            break;
     }
 }
 
@@ -174,31 +253,6 @@ static esp_err_t get_mac_address_string(char *mac_str)
 
     ESP_LOGI(TAG, "Aquatest MAC: %s", mac_str);
     return ESP_OK;
-}
-
-static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
-                               int32_t event_id, void *event_data)
-{
-    esp_mqtt_event_handle_t event = event_data;
-    g_client = event->client;
-
-    switch (event_id)
-    {
-    case MQTT_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "MQTT connected");
-        esp_mqtt_client_subscribe(g_client, cmd_topic, 1);
-        break;
-
-    case MQTT_EVENT_DATA:
-        ESP_LOGI(TAG, "CMD [%.*s] -> [%.*s]",
-                 event->topic_len, event->topic,
-                 event->data_len, event->data);
-        process_command(event->data, event->data_len);
-        break;
-
-    default:
-        break;
-    }
 }
 
 static void initialize_sntp(void)
@@ -220,6 +274,22 @@ static void mqtt_app_start(void)
         ESP_LOGE(TAG, "MAC error");
         return;
     }
+
+    temp_timer = xTimerCreate(
+        "temp_timer",
+        pdMS_TO_TICKS(temperature_interval_sec * 1000),
+        pdTRUE,
+        NULL,
+        temp_timer_cb
+    );
+
+    ph_timer = xTimerCreate(
+        "ph_timer",
+        pdMS_TO_TICKS(ph_interval_sec * 1000),
+        pdTRUE,
+        NULL,
+        ph_timer_cb
+    );
 
     snprintf(temperature_topic, sizeof(temperature_topic), "%s/%s/data/temperature", user_id, device_mac);
     snprintf(ph_topic, sizeof(ph_topic), "%s/%s/data/ph", user_id, device_mac);
