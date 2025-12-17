@@ -7,5 +7,6 @@
 #include <stdint.h>
 
 void display_init(gpio_num_t scl_gpio, gpio_num_t sda_gpio);
+void display_manager_update_display(void);
 
 #endif // SSD1306_DEMO_H

@@ -25,10 +25,8 @@ static int ow_read_level(void) { return gpio_get_level(s_pin); }
 
 static bool ow_reset(void)
 {
-	// wystawienie impulsu reset, czyli zwarciu linii danych na 480 μs do masy.
 	ow_drive_low();
 	ow_delay_us(480);
-	// Następnie każde urządzenie slave potwierdza swoją obecność
 	ow_release();
 	ow_delay_us(70);
 	int presence = !ow_read_level();

@@ -118,14 +118,17 @@ static void feed_task(void *param)
         {
             aquarium_data_t data;
             aquarium_data_get(&data);
-            if (data.feeding_interval_sec > 0)
+            // Publish all feed attempts (success or failure), regardless of interval setting
+            if (data.last_feed_time > 0)
             {
                 char msg[64];
                 struct tm *timeinfo = localtime(&data.last_feed_time);
                 const char *status = data.last_feed_success ? "success" : "failure";
-                snprintf(msg, sizeof(msg), "%lld,%02d:%02d:%02d,%s",
+                // Format: timestamp,MM/DD HH:MM,status
+                snprintf(msg, sizeof(msg), "%lld,%02d/%02d %02d:%02d,%s",
                          (long long)data.last_feed_time,
-                         timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec,
+                         timeinfo->tm_mon + 1, timeinfo->tm_mday, // MM/DD
+                         timeinfo->tm_hour, timeinfo->tm_min,     // HH:MM
                          status);
                 int msg_id = esp_mqtt_client_enqueue(g_client, feed_topic, msg, 0, 1, 0, true);
                 if (msg_id >= 0)
@@ -176,15 +179,24 @@ static void process_command(const char *cmd, int len)
         if (value >= 0)
         {
             aquarium_data_set_feeding_interval((uint32_t)value);
-            event_manager_set_bits(EVENT_BIT_FEED_INTERVAL_CHANGED);
+
+            // Calculate next feeding time based on interval
             if (value > 0)
             {
-                ESP_LOGI(TAG, "Feeding interval set to %d seconds", value);
+                time_t current_time = time(NULL);
+                time_t next_feed_time = current_time + value;
+                aquarium_data_update_next_feed(next_feed_time);
+                ESP_LOGI(TAG, "Feeding interval set to %d seconds, next feed at %lld",
+                         value, (long long)next_feed_time);
             }
             else
             {
-                ESP_LOGI(TAG, "Feeding disabled");
+                // Disabled - set next feed time to 0
+                aquarium_data_update_next_feed(0);
+                ESP_LOGI(TAG, "Feeding interval disabled (set to 0)");
             }
+
+            event_manager_set_bits(EVENT_BIT_FEED_INTERVAL_CHANGED | EVENT_BIT_DISPLAY_WAKE);
         }
         else
         {
@@ -291,8 +303,7 @@ static void mqtt_app_start(void)
     initialize_sntp();
 
     esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = BROKER_URL
-    };
+        .broker.address.uri = BROKER_URL};
 
     g_client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(g_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);

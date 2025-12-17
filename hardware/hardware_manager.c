@@ -13,6 +13,7 @@
 #include "feeder/motor_driver.h"
 #include "feeder/beam_driver.h"
 #include "mqtt_publisher.h"
+#include "display/ssd1306.h"
 
 static const char *TAG = "hardware_manager";
 TaskHandle_t led_task_handle = NULL;
@@ -44,6 +45,7 @@ static void feed_coordinator_task(void *pvParameters)
                 &beam_task_handle,
                 5,
                 &beam_task_handle);
+
             vTaskDelay(pdMS_TO_TICKS(100));
 
             bool feed_successful = false;
@@ -62,7 +64,6 @@ static void feed_coordinator_task(void *pvParameters)
 
                 if (beam_task_handle == NULL)
                 {
-                    ESP_LOGI(TAG, "Food detected on attempt %d", attempt);
                     feed_successful = true;
                     break;
                 }
@@ -76,7 +77,16 @@ static void feed_coordinator_task(void *pvParameters)
 
             time_t feed_time = time(NULL);
             aquarium_data_update_last_feed(feed_time, feed_successful);
+
+            uint32_t feeding_interval = aquarium_data_get_feeding_interval();
+            if (feeding_interval > 0)
+            {
+                time_t next_feed_time = feed_time + feeding_interval;
+                aquarium_data_update_next_feed(next_feed_time);
+            }
+
             event_manager_set_bits(EVENT_BIT_FEED_UPDATED);
+            display_manager_update_display();
 
             if (feed_successful)
             {
@@ -97,7 +107,7 @@ static void sensor_measurement_task(void *pvParameters)
     while (1)
     {
         EventBits_t bits = event_manager_wait_bits(
-            EVENT_BIT_MEASURE_TEMP | EVENT_BIT_MEASURE_PH,
+            EVENT_BIT_MEASURE_TEMP | EVENT_BIT_PH_MEASUREMENT_CONFIRMED,
             true,
             false,
             portMAX_DELAY);
@@ -113,8 +123,13 @@ static void sensor_measurement_task(void *pvParameters)
                 float temp = temp_sensor_read();
                 if (!isnan(temp))
                 {
+                    ESP_LOGI(TAG, "Temperature reading %d: %.2f°C", i + 1, temp);
                     temp_sum += temp;
                     valid_readings++;
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "Temperature reading %d failed (NaN)", i + 1);
                 }
             }
 
@@ -130,37 +145,19 @@ static void sensor_measurement_task(void *pvParameters)
             }
         }
 
-        if (bits & EVENT_BIT_MEASURE_PH)
+        if (bits & EVENT_BIT_PH_MEASUREMENT_CONFIRMED)
         {
-            ESP_LOGI(TAG, "pH measurement requested - waiting for user confirmation");
+            ESP_LOGI(TAG, "pH measurement confirmed - taking reading");
+            gpio_set_level(GPIO_PH_POWER, 1);
+            vTaskDelay(pdMS_TO_TICKS(PH_POWER_STABILIZE_MS));
 
-            // Wait for confirmation from display_manager (with timeout)
-            EventBits_t confirm_bits = event_manager_wait_bits(
-                EVENT_BIT_PH_MEASUREMENT_CONFIRMED,
-                true,                  // Clear on exit
-                false,                 // Wait for any
-                pdMS_TO_TICKS(61000)); // Slightly longer than display timeout
+            float ph_value = ph_sensor_read_ph();
 
-            if (confirm_bits & EVENT_BIT_PH_MEASUREMENT_CONFIRMED)
-            {
-                ESP_LOGI(TAG, "pH measurement confirmed - taking reading");
-                // Power ON the pH sensor only for the duration of the measurement
-                gpio_set_level(GPIO_PH_POWER, 1);
-                vTaskDelay(pdMS_TO_TICKS(PH_POWER_STABILIZE_MS));
-
-                float ph_value = ph_sensor_read_ph();
-
-                // Power OFF after measurement to save energy and sensor life
-                gpio_set_level(GPIO_PH_POWER, 0);
-
-                aquarium_data_update_ph(ph_value);
-                event_manager_set_bits(EVENT_BIT_PH_UPDATED);
-            }
-            else
-            {
-                ESP_LOGI(TAG, "pH measurement cancelled or timed out");
-            }
+            gpio_set_level(GPIO_PH_POWER, 0);
+            aquarium_data_update_ph(ph_value);
+            event_manager_set_bits(EVENT_BIT_PH_UPDATED);
         }
+        display_manager_update_display();
     }
 }
 
@@ -342,9 +339,4 @@ void hardware_init(void)
         NULL);
 
     ESP_LOGI(TAG, "Hardware manager initialized");
-}
-
-EventGroupHandle_t hardware_manager_get_event_group(void)
-{
-    return s_hardware_event_group;
 }

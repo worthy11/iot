@@ -18,7 +18,7 @@
 #define BUTTON_LONG_PRESS_MS 3000
 
 // Break Beam Sensor
-#define GPIO_BREAK_BEAM 5
+#define GPIO_BREAK_BEAM 23
 
 // Stepper Motor
 #define GPIO_MOTOR_IN1 16

@@ -18,6 +18,8 @@ static const char *TAG = "display";
 
 static SemaphoreHandle_t display_mutex = NULL;
 static TimerHandle_t sleep_timer = NULL;
+static TimerHandle_t ph_confirmation_timer = NULL;
+static bool confirmation_awaiting = false;
 
 // Display state enumeration
 typedef enum
@@ -67,6 +69,7 @@ static void display_settings(void);
 static void display_config(void);
 static void display_config_mode(void);
 static void display_passkey(void);
+static void display_ph_measurement_confirmation(void);
 
 // State transition handlers
 static display_state_t transition_main_left(void);
@@ -102,6 +105,14 @@ static void action_factory_settings(void);
 static void sleep_timer_callback(TimerHandle_t xTimer)
 {
     sleep_display();
+}
+
+static void ph_confirmation_timer_callback(TimerHandle_t xTimer)
+{
+    ESP_LOGI(TAG, "pH measurement confirmation timeout");
+    confirmation_awaiting = false;
+    event_manager_clear_bits(EVENT_BIT_MEASURE_PH);
+    display_manager_update_display();
 }
 
 static void wake_display(void)
@@ -146,7 +157,7 @@ static void reset_sleep_timer(void)
 
 static const char *get_time_string(time_t time_val)
 {
-    static char time_str[16];
+    static char time_str[32]; // Increased size to avoid truncation warning
     if (time_val == 0)
     {
         snprintf(time_str, sizeof(time_str), "Never");
@@ -154,7 +165,10 @@ static const char *get_time_string(time_t time_val)
     else
     {
         struct tm *timeinfo = localtime(&time_val);
-        snprintf(time_str, sizeof(time_str), "%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min);
+        int ret = snprintf(time_str, sizeof(time_str), "%02d/%02d %02d:%02d",
+                           timeinfo->tm_mday, timeinfo->tm_mon + 1, // DD/MM
+                           timeinfo->tm_hour, timeinfo->tm_min);    // HH:MM
+        (void)ret;                                                  // Suppress unused variable warning
     }
     return time_str;
 }
@@ -167,15 +181,14 @@ static void display_main_page(void)
     uint8_t font_size = data.font_size;
     uint8_t line_height = font_size * 8 + 2;
     uint8_t x_indent = 0;
-    uint8_t y_pos = line_height;
+    uint8_t y_pos = line_height + 4;
 
     oled_clear_display();
     oled_set_position(0, 0);
-    oled_draw_text("Aquarium Status", font_size, 0);
+    oled_draw_text(" <<< STATUS >>> ", font_size, 0);
 
     char line[64];
 
-    // Only display status items if they are enabled
     if (data.temperature_display_enabled)
     {
         snprintf(line, sizeof(line), "Temp: %.1f C", data.temperature);
@@ -194,7 +207,7 @@ static void display_main_page(void)
 
     if (data.last_feeding_display_enabled)
     {
-        snprintf(line, sizeof(line), "Last: %s", get_time_string(data.last_feed_time));
+        snprintf(line, sizeof(line), "Fed: %s", get_time_string(data.last_feed_time));
         oled_set_position(y_pos, x_indent);
         oled_draw_text(line, font_size, 0);
         y_pos += line_height;
@@ -202,7 +215,7 @@ static void display_main_page(void)
 
     if (data.next_feeding_display_enabled)
     {
-        snprintf(line, sizeof(line), "Next: %s", get_time_string(data.next_feed_time));
+        snprintf(line, sizeof(line), "Due: %s", get_time_string(data.next_feed_time));
         oled_set_position(y_pos, x_indent);
         oled_draw_text(line, font_size, 0);
     }
@@ -216,13 +229,13 @@ static void display_selection(void)
     aquarium_data_get(&data);
     uint8_t font_size = data.font_size;
     uint8_t line_height = font_size * 8 + 2;
-    uint8_t y_start = line_height;
+    uint8_t y_start = line_height + 4;
     uint8_t x_indent = 0;
     uint8_t x_text = 8;
 
     oled_clear_display();
     oled_set_position(0, 0);
-    oled_draw_text("MENU", font_size, 0);
+    oled_draw_text(" <<<  MENU  >>> ", font_size, 0);
 
     const char *menu_items[] = {"<< BACK", "Actions", "Display Options", "WiFi Config"};
     const int menu_count = sizeof(menu_items) / sizeof(menu_items[0]);
@@ -257,13 +270,13 @@ static void display_actions(void)
     aquarium_data_get(&data);
     uint8_t font_size = data.font_size;
     uint8_t line_height = font_size * 8 + 2;
-    uint8_t y_start = line_height;
+    uint8_t y_start = line_height + 4;
     uint8_t x_indent = 0;
     uint8_t x_text = 8;
 
     oled_clear_display();
     oled_set_position(0, 0);
-    oled_draw_text("Actions", font_size, 0);
+    oled_draw_text(" <<<ACTIONS>>>", font_size, 0);
 
     const char *menu_items[] = {"<< BACK", "Feed Fish", "Measure Temp", "Measure pH"};
     const int menu_count = sizeof(menu_items) / sizeof(menu_items[0]);
@@ -298,13 +311,13 @@ static void display_settings(void)
     aquarium_data_get(&data);
     uint8_t font_size = data.font_size;
     uint8_t line_height = font_size * 8 + 2;
-    uint8_t y_start = line_height;
+    uint8_t y_start = line_height + 4;
     uint8_t x_indent = 0;
     uint8_t x_text = 8;
 
     oled_clear_display();
     oled_set_position(0, 0);
-    oled_draw_text("Display Options", font_size, 0);
+    oled_draw_text(" DISPLAY OPTIONS", font_size, 0);
 
     char menu_line[64];
     const int menu_count = 8;
@@ -335,11 +348,11 @@ static void display_settings(void)
                      data.ph_display_enabled ? "ON" : "OFF");
             break;
         case 3:
-            snprintf(menu_line, sizeof(menu_line), "Last Feed %s",
+            snprintf(menu_line, sizeof(menu_line), "Fed %s",
                      data.last_feeding_display_enabled ? "ON" : "OFF");
             break;
         case 4:
-            snprintf(menu_line, sizeof(menu_line), "Next Feed %s",
+            snprintf(menu_line, sizeof(menu_line), "Due %s",
                      data.next_feeding_display_enabled ? "ON" : "OFF");
             break;
         case 5:
@@ -350,16 +363,16 @@ static void display_settings(void)
             uint32_t sleep_time = aquarium_data_get_display_sleep_time();
             if (sleep_time == 0)
             {
-                snprintf(menu_line, sizeof(menu_line), "Sleep: N");
+                snprintf(menu_line, sizeof(menu_line), "Sleep NEVER");
             }
             else
             {
-                snprintf(menu_line, sizeof(menu_line), "Sleep: %lu min", (unsigned long)sleep_time);
+                snprintf(menu_line, sizeof(menu_line), "Sleep %lu min", (unsigned long)sleep_time);
             }
         }
         break;
         case 7:
-            snprintf(menu_line, sizeof(menu_line), "Factory Settings");
+            snprintf(menu_line, sizeof(menu_line), "Factory");
             break;
         }
 
@@ -456,7 +469,7 @@ static void display_passkey(void)
     oled_update_display();
 }
 
-static void display_ph_measurement_waiting(void)
+static void display_ph_measurement_confirmation(void)
 {
     aquarium_data_t data;
     aquarium_data_get(&data);
@@ -470,63 +483,20 @@ static void display_ph_measurement_waiting(void)
     oled_draw_text("Press Confirm", font_size, 0);
 
     oled_update_display();
-}
 
-static void ph_measurement_confirmation_task(void *pvParameters)
-{
-    ESP_LOGI(TAG, "pH measurement confirmation task started");
-
-    while (1)
+    // Start 30-second timer and set confirmation flag
+    confirmation_awaiting = true;
+    if (ph_confirmation_timer != NULL)
     {
-        // Wait for pH measurement request
-        EventBits_t bits = event_manager_wait_bits(
-            EVENT_BIT_MEASURE_PH,
-            true,  // Clear on exit
-            false, // Wait for any
-            portMAX_DELAY);
-
-        if (bits & EVENT_BIT_MEASURE_PH)
+        // Use xTimerStart which will start the timer if not running, or restart if already running
+        BaseType_t result = xTimerStart(ph_confirmation_timer, 0);
+        if (result != pdPASS)
         {
-            ESP_LOGI(TAG, "pH measurement requested - showing confirmation screen");
-
-            // Wake display
-            wake_display();
-            vTaskDelay(pdMS_TO_TICKS(100)); // Give display time to wake
-
-            // Display "Measure pH" message
-            if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
-            {
-                display_ph_measurement_waiting();
-                xSemaphoreGive(display_mutex);
-            }
-
-            // Wait for confirm button press with 1 minute timeout
-            EventBits_t confirm_bits = event_manager_wait_bits(
-                EVENT_BIT_DISPLAY_CONFIRM,
-                true,                  // Clear on exit
-                false,                 // Wait for any
-                pdMS_TO_TICKS(60000)); // 1 minute timeout
-
-            bool measurement_confirmed = (confirm_bits & EVENT_BIT_DISPLAY_CONFIRM) != 0;
-
-            if (measurement_confirmed)
-            {
-                ESP_LOGI(TAG, "pH measurement confirmed by user");
-                event_manager_set_bits(EVENT_BIT_PH_MEASUREMENT_CONFIRMED);
-            }
-            else
-            {
-                ESP_LOGI(TAG, "pH measurement timeout - returning to menu");
-            }
-
-            // Clear display and let display manager refresh to show menu
-            if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
-            {
-                oled_clear_display();
-                oled_update_display();
-                xSemaphoreGive(display_mutex);
-            }
-            event_manager_set_bits(EVENT_BIT_DISPLAY_WAKE); // Trigger display refresh
+            ESP_LOGW(TAG, "Failed to start pH confirmation timer");
+        }
+        else
+        {
+            ESP_LOGI(TAG, "pH confirmation timer started (30s timeout)");
         }
     }
 }
@@ -885,7 +855,7 @@ static const struct
     [STATE_PASSKEY] = {.display_func = display_passkey, .on_left = NULL, .on_right = NULL, .on_confirm = NULL},
 };
 
-static void update_display(void)
+void display_manager_update_display(void)
 {
     if (!display_awake)
         return;
@@ -900,6 +870,7 @@ static void update_display(void)
         EventBits_t bits = event_manager_get_bits();
         bool config_mode = (bits & EVENT_BIT_CONFIG_MODE) != 0;
         bool passkey_display = (bits & EVENT_BIT_PASSKEY_DISPLAY) != 0;
+        bool measure_ph = (bits & EVENT_BIT_MEASURE_PH) != 0;
 
         if (config_mode && passkey_display)
         {
@@ -908,6 +879,10 @@ static void update_display(void)
         else if (config_mode)
         {
             display_config_mode();
+        }
+        else if (measure_ph)
+        {
+            display_ph_measurement_confirmation();
         }
         else if (sm.state < STATE_COUNT && state_table[sm.state].display_func != NULL)
         {
@@ -921,37 +896,22 @@ static void update_display(void)
 static void display_task(void *pvParameters)
 {
     TaskHandle_t task_handle = xTaskGetCurrentTaskHandle();
-    event_manager_register_notification(task_handle, EVENT_BIT_DISPLAY_WAKE | EVENT_BIT_CONFIG_MODE | EVENT_BIT_PASSKEY_DISPLAY);
+    event_manager_register_notification(task_handle, EVENT_BIT_DISPLAY_WAKE | EVENT_BIT_CONFIG_MODE | EVENT_BIT_PASSKEY_DISPLAY | EVENT_BIT_MEASURE_PH);
 
     uint32_t notification_value;
-    aquarium_data_t data;
 
     display_awake = true;
     oled_display_on();
     reset_sleep_timer();
 
-    update_display();
+    display_manager_update_display();
 
     while (1)
     {
-        if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, pdMS_TO_TICKS(1000)) == pdTRUE)
+        if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, portMAX_DELAY) == pdTRUE)
         {
-            if (notification_value & EVENT_BIT_DISPLAY_WAKE)
-            {
-                wake_display();
-                update_display();
-            }
-
-            if (notification_value & (EVENT_BIT_CONFIG_MODE | EVENT_BIT_PASSKEY_DISPLAY))
-            {
-                wake_display();
-                update_display();
-            }
-        }
-
-        if (display_awake && sm.state == STATE_MAIN)
-        {
-            update_display();
+            wake_display();
+            display_manager_update_display();
         }
     }
 }
@@ -994,14 +954,27 @@ static void navigation_task(void *pvParameters)
         }
         else if (bits & EVENT_BIT_DISPLAY_CONFIRM)
         {
-            if (state_table[sm.state].on_confirm != NULL)
+            // Check if pH measurement confirmation is awaiting
+            if (confirmation_awaiting)
+            {
+                ESP_LOGI(TAG, "pH measurement confirmed by user");
+                confirmation_awaiting = false;
+                if (ph_confirmation_timer != NULL)
+                {
+                    xTimerStop(ph_confirmation_timer, 0);
+                }
+                event_manager_set_bits(EVENT_BIT_PH_MEASUREMENT_CONFIRMED);
+                event_manager_clear_bits(EVENT_BIT_MEASURE_PH);
+                event_manager_set_bits(EVENT_BIT_DISPLAY_WAKE);
+            }
+            else if (state_table[sm.state].on_confirm != NULL)
             {
                 new_state = state_table[sm.state].on_confirm();
                 sm.state = new_state;
             }
         }
 
-        update_display();
+        display_manager_update_display();
     }
 }
 
@@ -1058,6 +1031,13 @@ void display_init(gpio_num_t scl_gpio, gpio_num_t sda_gpio)
         }
     }
 
+    // Create pH confirmation timer (30 seconds, one-shot)
+    ph_confirmation_timer = xTimerCreate("ph_confirmation", pdMS_TO_TICKS(30000), pdFALSE, NULL, ph_confirmation_timer_callback);
+    if (ph_confirmation_timer == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create pH confirmation timer");
+    }
+
     xTaskCreate(
         display_task,
         "display_task",
@@ -1072,14 +1052,6 @@ void display_init(gpio_num_t scl_gpio, gpio_num_t sda_gpio)
         4096,
         NULL,
         5,
-        NULL);
-
-    xTaskCreate(
-        ph_measurement_confirmation_task,
-        "ph_confirmation_task",
-        2048,
-        NULL,
-        3,
         NULL);
 
     ESP_LOGI(TAG, "Display manager initialized");

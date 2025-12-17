@@ -22,13 +22,28 @@ static void IRAM_ATTR beam_isr(void *arg)
             portYIELD_FROM_ISR();
         }
     }
+    // Note: Cannot use ESP_LOG in ISR, but interrupt is being handled
 }
 
 void break_beam_monitor(void *pvParameters)
 {
     TaskHandle_t *task_handle = (TaskHandle_t *)pvParameters;
     uint32_t io_level;
-    ESP_LOGI(TAG, "Starting beam monitoring");
+
+    if (task_handle == NULL)
+    {
+        ESP_LOGE(TAG, "Beam monitor task: NULL task handle pointer!");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (gpio_evt_queue == NULL)
+    {
+        ESP_LOGE(TAG, "Beam monitor task: GPIO event queue is NULL!");
+        *task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
 
     while (1)
     {
@@ -36,12 +51,10 @@ void break_beam_monitor(void *pvParameters)
         {
             if (io_level == 0)
             {
-                ESP_LOGI(TAG, "Beam break detected - food has fallen");
                 break;
             }
         }
     }
-
     *task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -54,14 +67,43 @@ void break_beam_init(gpio_num_t gpio)
         .pin_bit_mask = (1ULL << gpio),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE, // Enable pull-down so GPIO reads LOW when sensor isn't driving
         .intr_type = GPIO_INTR_ANYEDGE};
-    gpio_config(&io_conf);
+
+    esp_err_t ret = gpio_config(&io_conf);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to configure GPIO %d: %s", (int)gpio, esp_err_to_name(ret));
+        return;
+    }
 
     gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
+    if (gpio_evt_queue == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create GPIO event queue!");
+        return;
+    }
 
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(gpio, beam_isr, NULL);
+    ret = gpio_install_isr_service(0);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGE(TAG, "Failed to install GPIO ISR service: %s", esp_err_to_name(ret));
+        return;
+    }
 
-    ESP_LOGI(TAG, "Break beam driver initialized (GPIO %d)", gpio);
+    ret = gpio_isr_handler_add(gpio, beam_isr, NULL);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to add ISR handler for GPIO %d: %s", (int)gpio, esp_err_to_name(ret));
+        return;
+    }
+}
+
+int break_beam_get_state(void)
+{
+    if (beam_gpio == GPIO_NUM_NC)
+    {
+        return -1; // Not initialized
+    }
+    return gpio_get_level(beam_gpio);
 }

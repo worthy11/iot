@@ -45,9 +45,6 @@ static void motor_rotate_steps(int steps)
     int abs_steps = (steps > 0) ? steps : -steps;
     int current_step = 0;
 
-    ESP_LOGI(TAG, "Rotating motor %d steps (direction: %s)",
-             abs_steps, (direction > 0) ? "forward" : "backward");
-
     for (int i = 0; i < abs_steps; i++)
     {
         set_motor_step(step_sequence[current_step]);
@@ -65,13 +62,11 @@ static void motor_rotate_steps(int steps)
     }
 
     motor_stop();
-    ESP_LOGI(TAG, "Motor rotation complete");
 }
 
 void motor_rotate_portion(bool direction)
 {
     int steps = direction ? STEPS_PER_PORTION : -STEPS_PER_PORTION;
-    ESP_LOGI(TAG, "Rotating motor one portion (%s)", direction ? "forward" : "backward");
     motor_rotate_steps(steps);
 }
 
