@@ -144,7 +144,15 @@ static void sensor_measurement_task(void *pvParameters)
             if (confirm_bits & EVENT_BIT_PH_MEASUREMENT_CONFIRMED)
             {
                 ESP_LOGI(TAG, "pH measurement confirmed - taking reading");
+                // Power ON the pH sensor only for the duration of the measurement
+                gpio_set_level(GPIO_PH_POWER, 1);
+                vTaskDelay(pdMS_TO_TICKS(PH_POWER_STABILIZE_MS));
+
                 float ph_value = ph_sensor_read_ph();
+
+                // Power OFF after measurement to save energy and sensor life
+                gpio_set_level(GPIO_PH_POWER, 0);
+
                 aquarium_data_update_ph(ph_value);
                 event_manager_set_bits(EVENT_BIT_PH_UPDATED);
             }
@@ -289,6 +297,17 @@ void hardware_init(void)
     motor_driver_init(GPIO_MOTOR_IN1, GPIO_MOTOR_IN2, GPIO_MOTOR_IN3, GPIO_MOTOR_IN4);
     ph_sensor_init(GPIO_PH_OUTPUT, GPIO_PH_TEMP_COMP);
     temp_sensor_init(GPIO_TEMP_SENSOR);
+
+    // Initialize pH sensor power control (GPIO25) and keep it OFF by default
+    gpio_config_t ph_power_cfg = {
+        .pin_bit_mask = (1ULL << GPIO_PH_POWER),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = 0,
+        .pull_down_en = 0,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&ph_power_cfg);
+    gpio_set_level(GPIO_PH_POWER, 0);
 
     xTaskCreate(
         feed_coordinator_task,

@@ -291,8 +291,8 @@ static void mqtt_app_start(void)
     initialize_sntp();
 
     esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = BROKER_URL,
-        .credentials.username = user_id};
+        .broker.address.uri = BROKER_URL
+    };
 
     g_client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(g_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
