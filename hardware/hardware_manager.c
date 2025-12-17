@@ -290,15 +290,6 @@ void hardware_init(void)
     ph_sensor_init(GPIO_PH_OUTPUT, GPIO_PH_TEMP_COMP);
     temp_sensor_init(GPIO_TEMP_SENSOR);
 
-    gpio_config_t led_conf = {
-        .pin_bit_mask = (1ULL << GPIO_LED),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE};
-    gpio_config(&led_conf);
-    gpio_set_level(GPIO_LED, 0);
-
     xTaskCreate(
         feed_coordinator_task,
         "feed_coordinator",

@@ -15,12 +15,6 @@
 #include "esp_crt_bundle.h"
 #include "esp_sntp.h"
 
-#define EVENT_BIT_PUBLISH_TEMP BIT17
-#define EVENT_BIT_PUBLISH_PH BIT18
-
-static TimerHandle_t temp_timer;
-static TimerHandle_t ph_timer;
-
 // #define BROKER_URL "mqtt://10.72.5.219:1883"
 // #define BROKER_URL "mqtt://10.88.236.219:1883"
 #define BROKER_URL "mqtt://10.177.164.196:1883"
@@ -35,16 +29,6 @@ static char temperature_topic[64];
 static char ph_topic[64];
 static char feed_topic[64];
 static char cmd_topic[64];
-
-static void temp_timer_cb(TimerHandle_t xTimer)
-{
-    event_manager_set_bits(EVENT_BIT_PUBLISH_TEMP);
-}
-
-static void ph_timer_cb(TimerHandle_t xTimer)
-{
-    event_manager_set_bits(EVENT_BIT_PUBLISH_PH);
-}
 
 static void temperature_publish_task(void *param)
 {
@@ -298,20 +282,6 @@ static void mqtt_app_start(void)
         ESP_LOGE(TAG, "MAC error");
         return;
     }
-
-    temp_timer = xTimerCreate(
-        "temp_timer",
-        pdMS_TO_TICKS(temperature_interval_sec * 1000),
-        pdTRUE,
-        NULL,
-        temp_timer_cb);
-
-    ph_timer = xTimerCreate(
-        "ph_timer",
-        pdMS_TO_TICKS(ph_interval_sec * 1000),
-        pdTRUE,
-        NULL,
-        ph_timer_cb);
 
     snprintf(temperature_topic, sizeof(temperature_topic), "%s/%s/data/temperature", user_id, device_mac);
     snprintf(ph_topic, sizeof(ph_topic), "%s/%s/data/ph", user_id, device_mac);
