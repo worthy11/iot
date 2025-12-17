@@ -29,5 +29,6 @@ void app_main(void)
     event_manager_init();
     wifi_manager_init();
     ble_manager_init();
+    init_mqtt();
     hardware_init();
 }

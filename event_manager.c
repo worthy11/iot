@@ -23,18 +23,8 @@ EventGroupHandle_t event_manager_get_group(void)
 
 void event_manager_init(void)
 {
-    if (s_event_group == NULL)
-    {
-        s_event_group = xEventGroupCreate();
-        if (s_event_group == NULL)
-        {
-            ESP_LOGE(TAG, "Failed to create event group");
-        }
-        else
-        {
-            ESP_LOGI(TAG, "Event manager initialized");
-        }
-    }
+    s_event_group = xEventGroupCreate();
+    ESP_LOGI(TAG, "Event manager initialized");
 }
 
 EventBits_t event_manager_set_bits(EventBits_t bits)

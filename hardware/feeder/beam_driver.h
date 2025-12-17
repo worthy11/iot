@@ -5,6 +5,6 @@
 #include <stdbool.h>
 
 void break_beam_init(gpio_num_t gpio);
-bool break_beam_monitor(uint32_t timeout_ms);
+void break_beam_monitor(void *pvParameters);
 
 #endif // BREAK_BEAM_H

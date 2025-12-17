@@ -25,6 +25,7 @@
 #define GPIO_MOTOR_IN2 17
 #define GPIO_MOTOR_IN3 18
 #define GPIO_MOTOR_IN4 19
+#define GPIO_MOTOR_RETRY_DELAY_MS 500
 
 // pH Sensor
 #define GPIO_PH_OUTPUT 32
@@ -34,10 +35,7 @@
 #define GPIO_OLED_SDA 21
 #define GPIO_OLED_SCL 22
 
-// LED
-#define GPIO_LED 2 // Built-in LED on most ESP32 boards
-
-// Temperature Sensor (1-Wire)
+// Temperature Sensor
 #define GPIO_TEMP_SENSOR 4
 
 #include "buttons/left_button.h"

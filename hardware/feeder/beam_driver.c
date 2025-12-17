@@ -24,46 +24,26 @@ static void IRAM_ATTR beam_isr(void *arg)
     }
 }
 
-bool break_beam_monitor(uint32_t timeout_ms)
+void break_beam_monitor(void *pvParameters)
 {
+    TaskHandle_t *task_handle = (TaskHandle_t *)pvParameters;
     uint32_t io_level;
-    bool success = false;
+    ESP_LOGI(TAG, "Starting beam monitoring");
 
-    if (gpio_evt_queue == NULL)
+    while (1)
     {
-        ESP_LOGE(TAG, "Beam driver not initialized");
-        return false;
-    }
-
-    ESP_LOGI(TAG, "Starting beam monitoring (timeout: %lu ms)", timeout_ms);
-
-    TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
-    TickType_t start_time = xTaskGetTickCount();
-
-    while ((xTaskGetTickCount() - start_time) < timeout_ticks)
-    {
-        TickType_t remaining_time = timeout_ticks - (xTaskGetTickCount() - start_time);
-        if (xQueueReceive(gpio_evt_queue, &io_level, remaining_time) == pdTRUE)
+        if (xQueueReceive(gpio_evt_queue, &io_level, portMAX_DELAY) == pdTRUE)
         {
             if (io_level == 0)
             {
                 ESP_LOGI(TAG, "Beam break detected - food has fallen");
-                success = true;
                 break;
             }
         }
     }
 
-    if (success)
-    {
-        ESP_LOGI(TAG, "Beam monitoring completed - success");
-    }
-    else
-    {
-        ESP_LOGW(TAG, "Beam monitoring completed - timeout (no beam break)");
-    }
-
-    return success;
+    *task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 void break_beam_init(gpio_num_t gpio)

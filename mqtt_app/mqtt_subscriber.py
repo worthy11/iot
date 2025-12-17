@@ -5,7 +5,7 @@ import paho.mqtt.client as mqtt
 import threading
 
 # Configuration
-BROKER = "10.88.236.219"
+BROKER = "10.177.164.196"
 PORT = 1883
 USER_ID = "f8e87394"
 TOPIC_SUBSCRIPTION = f"{USER_ID}/+/data/#"
@@ -36,7 +36,6 @@ class IoTApp:
         ttk.Label(header_frame, text="Aquatest", style="Header.TLabel").pack(side=tk.LEFT)
         ttk.Label(header_frame, text=f"IP: {self.local_ip}", foreground="blue").pack(side=tk.RIGHT)
 
-        # --- MONITORING SECTION (Subscriber) ---
         monitor_frame = ttk.LabelFrame(main_frame, text="Live Monitor", padding="10")
         monitor_frame.pack(fill=tk.X, pady=5)
 
@@ -49,39 +48,45 @@ class IoTApp:
         self.feed_var = tk.StringVar(value="--:--:--")
         self.create_card(monitor_frame, "LAST FEED", self.feed_var, "")
 
-        # --- CONTROL SECTION (Publisher) ---
         control_frame = ttk.LabelFrame(main_frame, text="Control Panel", padding="10")
         control_frame.pack(fill=tk.BOTH, expand=True, pady=10)
 
-        # Target MAC
         mac_frame = ttk.Frame(control_frame)
         mac_frame.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(mac_frame, text="Target MAC:", width=12).pack(side=tk.LEFT)
         self.mac_var = tk.StringVar(value=DEFAULT_MAC)
         ttk.Entry(mac_frame, textvariable=self.mac_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Temperature Control
+        # Temperature interval setting
         cmd_temp = ttk.Frame(control_frame)
         cmd_temp.pack(fill=tk.X, pady=5)
-        ttk.Label(cmd_temp, text="Set Temp Interval:", width=18).pack(side=tk.LEFT)
-        self.set_temp_var = tk.StringVar(value="5")
+        ttk.Label(cmd_temp, text="Set Temp (s):", width=12).pack(side=tk.LEFT)
+        self.set_temp_var = tk.StringVar(value="60")
         ttk.Entry(cmd_temp, textvariable=self.set_temp_var, width=10).pack(side=tk.LEFT, padx=5)
-        ttk.Button(cmd_temp, text="Send", command=self.send_temp).pack(side=tk.LEFT)
+        ttk.Button(cmd_temp, text="Set", command=self.send_set_temp).pack(side=tk.LEFT)
 
-        # pH Control
-        cmd_ph = ttk.Frame(control_frame)
-        cmd_ph.pack(fill=tk.X, pady=5)
-        ttk.Label(cmd_ph, text="Set pH Interval:", width=18).pack(side=tk.LEFT)
-        self.set_ph_var = tk.StringVar(value="5")
-        ttk.Entry(cmd_ph, textvariable=self.set_ph_var, width=10).pack(side=tk.LEFT, padx=5)
-        ttk.Button(cmd_ph, text="Send", command=self.send_ph).pack(side=tk.LEFT)
+        # Feeding interval setting
+        cmd_feed = ttk.Frame(control_frame)
+        cmd_feed.pack(fill=tk.X, pady=5)
+        ttk.Label(cmd_feed, text="Set Feed (s):", width=12).pack(side=tk.LEFT)
+        self.set_feed_var = tk.StringVar(value="3600")
+        ttk.Entry(cmd_feed, textvariable=self.set_feed_var, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(cmd_feed, text="Set", command=self.send_set_feed).pack(side=tk.LEFT)
 
         ttk.Separator(control_frame, orient="horizontal").pack(fill=tk.X, pady=10)
 
-        # Action Buttons
-        btn_frame = ttk.Frame(control_frame)
-        btn_frame.pack(fill=tk.X)
-        ttk.Button(btn_frame, text="FEED", command=self.send_feed).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
+        # Force action buttons
+        force_frame = ttk.LabelFrame(control_frame, text="Force Actions", padding="5")
+        force_frame.pack(fill=tk.X, pady=5)
+        
+        btn_frame1 = ttk.Frame(force_frame)
+        btn_frame1.pack(fill=tk.X, pady=2)
+        ttk.Button(btn_frame1, text="Force Temp", command=self.send_force_temp).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
+        ttk.Button(btn_frame1, text="Force pH", command=self.send_force_ph).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
+        
+        btn_frame2 = ttk.Frame(force_frame)
+        btn_frame2.pack(fill=tk.X, pady=2)
+        ttk.Button(btn_frame2, text="Force Feed", command=self.send_force_feed).pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         # --- STATUS BAR ---
         self.status_var = tk.StringVar(value="Connecting to MQTT...")
@@ -149,13 +154,32 @@ class IoTApp:
             if len(parts) >= 4 and parts[2] == 'data':
                 data_type = parts[3]
                 
-                # Update UI in main thread
+                # Parse message format: value,timestamp or timestamp,time,status
                 if data_type == 'temperature':
-                    self.root.after(0, lambda: self.temp_var.set(payload))
+                    # Format: "value,timestamp"
+                    try:
+                        value, _ = payload.split(',', 1)
+                        self.root.after(0, lambda v=value: self.temp_var.set(f"{float(v):.2f}"))
+                    except:
+                        self.root.after(0, lambda: self.temp_var.set(payload))
                 elif data_type == 'ph':
-                    self.root.after(0, lambda: self.ph_var.set(payload))
+                    # Format: "value,timestamp"
+                    try:
+                        value, _ = payload.split(',', 1)
+                        self.root.after(0, lambda v=value: self.ph_var.set(f"{float(v):.2f}"))
+                    except:
+                        self.root.after(0, lambda: self.ph_var.set(payload))
                 elif data_type == 'feed':
-                    self.root.after(0, lambda: self.feed_var.set(payload))
+                    # Format: "timestamp,HH:MM:SS,status"
+                    try:
+                        parts_feed = payload.split(',')
+                        if len(parts_feed) >= 2:
+                            time_str = parts_feed[1]  # HH:MM:SS
+                            self.root.after(0, lambda t=time_str: self.feed_var.set(t))
+                        else:
+                            self.root.after(0, lambda: self.feed_var.set(payload))
+                    except:
+                        self.root.after(0, lambda: self.feed_var.set(payload))
                     
         except Exception as e:
             print(f"Error parsing message: {e}")
@@ -183,21 +207,38 @@ class IoTApp:
             self.update_status(f"Publish Error: {e}")
             messagebox.showerror("Error", f"Failed to publish: {e}")
 
-    def send_temp(self):
+    def send_set_temp(self):
         val = self.set_temp_var.get().strip()
         if val:
-            self.publish_command(f"temperature {val}")
+            try:
+                interval = int(val)
+                if interval >= 0:
+                    self.publish_command(f"set temp {interval}")
+                else:
+                    messagebox.showwarning("Invalid Value", "Interval must be >= 0 (0 to disable)")
+            except ValueError:
+                messagebox.showwarning("Invalid Value", "Please enter a valid number")
 
-    def send_ph(self):
-        val = self.set_ph_var.get().strip()
+    def send_set_feed(self):
+        val = self.set_feed_var.get().strip()
         if val:
-            self.publish_command(f"ph {val}")
+            try:
+                interval = int(val)
+                if interval >= 0:
+                    self.publish_command(f"set feed {interval}")
+                else:
+                    messagebox.showwarning("Invalid Value", "Interval must be >= 0 (0 to disable)")
+            except ValueError:
+                messagebox.showwarning("Invalid Value", "Please enter a valid number")
 
-    def send_feed(self):
-        self.publish_command("feed")
+    def send_force_temp(self):
+        self.publish_command("force temp")
 
-    def send_stop(self):
-        self.publish_command("stop")
+    def send_force_ph(self):
+        self.publish_command("force ph")
+
+    def send_force_feed(self):
+        self.publish_command("force feed")
 
 if __name__ == "__main__":
     root = tk.Tk()

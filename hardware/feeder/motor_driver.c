@@ -68,10 +68,11 @@ static void motor_rotate_steps(int steps)
     ESP_LOGI(TAG, "Motor rotation complete");
 }
 
-void motor_rotate_portion(void)
+void motor_rotate_portion(bool direction)
 {
-    ESP_LOGI(TAG, "Rotating motor one portion");
-    motor_rotate_steps(STEPS_PER_PORTION);
+    int steps = direction ? STEPS_PER_PORTION : -STEPS_PER_PORTION;
+    ESP_LOGI(TAG, "Rotating motor one portion (%s)", direction ? "forward" : "backward");
+    motor_rotate_steps(steps);
 }
 
 void motor_driver_init(gpio_num_t in1, gpio_num_t in2, gpio_num_t in3, gpio_num_t in4)

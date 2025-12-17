@@ -13,14 +13,19 @@ static aquarium_data_t g_data = {
     .temperature = 0.0f,
     .ph = 0.0f,
     .last_feed_time = 0,
+    .last_temp_measurement_time = 0,
+    .last_feed_success = false,
     .next_feed_time = 0,
+    .temp_reading_interval_sec = 0,
+    .feeding_interval_sec = 0,
     .display_contrast = 128,
     .font_size = 1,
     .line_height = 10,
     .temperature_display_enabled = true,
     .ph_display_enabled = true,
     .last_feeding_display_enabled = true,
-    .next_feeding_display_enabled = true};
+    .next_feeding_display_enabled = true,
+    .display_sleep_time_min = 1}; // Default 1 minute
 
 static SemaphoreHandle_t data_mutex = NULL;
 
@@ -107,6 +112,7 @@ void aquarium_data_update_temperature(float temp)
     if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
     {
         g_data.temperature = temp;
+        g_data.last_temp_measurement_time = time(NULL);
         xSemaphoreGive(data_mutex);
     }
 }
@@ -120,14 +126,37 @@ void aquarium_data_update_ph(float ph)
     }
 }
 
-void aquarium_data_update_last_feed(time_t feed_time)
+void aquarium_data_update_last_feed(time_t feed_time, bool success)
 {
     if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
     {
         g_data.last_feed_time = feed_time;
+        g_data.last_feed_success = success;
         save_to_nvs();
         xSemaphoreGive(data_mutex);
     }
+}
+
+time_t aquarium_data_get_last_temp_measurement_time(void)
+{
+    time_t last_time = 0;
+    if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        last_time = g_data.last_temp_measurement_time;
+        xSemaphoreGive(data_mutex);
+    }
+    return last_time;
+}
+
+time_t aquarium_data_get_last_feed_time(void)
+{
+    time_t last_time = 0;
+    if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        last_time = g_data.last_feed_time;
+        xSemaphoreGive(data_mutex);
+    }
+    return last_time;
 }
 
 void aquarium_data_update_next_feed(time_t next_time)
@@ -204,4 +233,67 @@ void aquarium_data_set_display_enabled(bool temp, bool ph, bool last_feed, bool 
         save_to_nvs();
         xSemaphoreGive(data_mutex);
     }
+}
+
+void aquarium_data_set_temp_reading_interval(uint32_t interval_sec)
+{
+    if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        g_data.temp_reading_interval_sec = interval_sec;
+        save_to_nvs();
+        xSemaphoreGive(data_mutex);
+    }
+}
+
+uint32_t aquarium_data_get_temp_reading_interval(void)
+{
+    uint32_t interval = 10;
+    if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        interval = g_data.temp_reading_interval_sec;
+        xSemaphoreGive(data_mutex);
+    }
+    return interval;
+}
+
+void aquarium_data_set_feeding_interval(uint32_t interval_sec)
+{
+    if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        g_data.feeding_interval_sec = interval_sec;
+        save_to_nvs();
+        xSemaphoreGive(data_mutex);
+    }
+}
+
+uint32_t aquarium_data_get_feeding_interval(void)
+{
+    uint32_t interval = 0;
+    if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        interval = g_data.feeding_interval_sec;
+        xSemaphoreGive(data_mutex);
+    }
+    return interval;
+}
+
+void aquarium_data_set_display_sleep_time(uint32_t sleep_time_min)
+{
+    if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        g_data.display_sleep_time_min = sleep_time_min;
+        save_to_nvs();
+        xSemaphoreGive(data_mutex);
+    }
+}
+
+uint32_t aquarium_data_get_display_sleep_time(void)
+{
+    uint32_t sleep_time = 1;
+    if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        sleep_time = g_data.display_sleep_time_min;
+        xSemaphoreGive(data_mutex);
+    }
+    return sleep_time;
 }

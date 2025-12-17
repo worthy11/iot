@@ -94,6 +94,7 @@ static void action_toggle_ph_display(void);
 static void action_toggle_last_feed_display(void);
 static void action_toggle_next_feed_display(void);
 static void action_change_contrast(void);
+static void action_change_sleep_time(void);
 static void action_change_wifi(void);
 static void action_reset_wifi(void);
 static void action_factory_settings(void);
@@ -132,7 +133,14 @@ static void reset_sleep_timer(void)
 {
     if (sleep_timer != NULL)
     {
-        xTimerReset(sleep_timer, 0);
+        uint32_t sleep_time_min = aquarium_data_get_display_sleep_time();
+        if (sleep_time_min > 0)
+        {
+            // Update timer period if it changed
+            xTimerChangePeriod(sleep_timer, pdMS_TO_TICKS(sleep_time_min * 60000), 0);
+            xTimerReset(sleep_timer, 0);
+        }
+        // If sleep_time_min == 0 (never), don't start/reset the timer
     }
 }
 
@@ -299,7 +307,7 @@ static void display_settings(void)
     oled_draw_text("Display Options", font_size, 0);
 
     char menu_line[64];
-    const int menu_count = 7;
+    const int menu_count = 8;
     int visible_start = 0;
     if (sm.menu_index > 2)
         visible_start = sm.menu_index - 2;
@@ -338,6 +346,19 @@ static void display_settings(void)
             snprintf(menu_line, sizeof(menu_line), "Contrast");
             break;
         case 6:
+        {
+            uint32_t sleep_time = aquarium_data_get_display_sleep_time();
+            if (sleep_time == 0)
+            {
+                snprintf(menu_line, sizeof(menu_line), "Sleep: N");
+            }
+            else
+            {
+                snprintf(menu_line, sizeof(menu_line), "Sleep: %lu min", (unsigned long)sleep_time);
+            }
+        }
+        break;
+        case 7:
             snprintf(menu_line, sizeof(menu_line), "Factory Settings");
             break;
         }
@@ -433,6 +454,81 @@ static void display_passkey(void)
     oled_draw_text(passkey_str, font_size, 0);
 
     oled_update_display();
+}
+
+static void display_ph_measurement_waiting(void)
+{
+    aquarium_data_t data;
+    aquarium_data_get(&data);
+    uint8_t font_size = data.font_size;
+    uint8_t line_height = font_size * 8 + 2;
+
+    oled_clear_display();
+    oled_set_position(0, 0);
+    oled_draw_text("Measure pH", font_size, 0);
+    oled_set_position(line_height, 0);
+    oled_draw_text("Press Confirm", font_size, 0);
+
+    oled_update_display();
+}
+
+static void ph_measurement_confirmation_task(void *pvParameters)
+{
+    ESP_LOGI(TAG, "pH measurement confirmation task started");
+
+    while (1)
+    {
+        // Wait for pH measurement request
+        EventBits_t bits = event_manager_wait_bits(
+            EVENT_BIT_MEASURE_PH,
+            true,  // Clear on exit
+            false, // Wait for any
+            portMAX_DELAY);
+
+        if (bits & EVENT_BIT_MEASURE_PH)
+        {
+            ESP_LOGI(TAG, "pH measurement requested - showing confirmation screen");
+
+            // Wake display
+            wake_display();
+            vTaskDelay(pdMS_TO_TICKS(100)); // Give display time to wake
+
+            // Display "Measure pH" message
+            if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
+            {
+                display_ph_measurement_waiting();
+                xSemaphoreGive(display_mutex);
+            }
+
+            // Wait for confirm button press with 1 minute timeout
+            EventBits_t confirm_bits = event_manager_wait_bits(
+                EVENT_BIT_DISPLAY_CONFIRM,
+                true,                  // Clear on exit
+                false,                 // Wait for any
+                pdMS_TO_TICKS(60000)); // 1 minute timeout
+
+            bool measurement_confirmed = (confirm_bits & EVENT_BIT_DISPLAY_CONFIRM) != 0;
+
+            if (measurement_confirmed)
+            {
+                ESP_LOGI(TAG, "pH measurement confirmed by user");
+                event_manager_set_bits(EVENT_BIT_PH_MEASUREMENT_CONFIRMED);
+            }
+            else
+            {
+                ESP_LOGI(TAG, "pH measurement timeout - returning to menu");
+            }
+
+            // Clear display and let display manager refresh to show menu
+            if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
+            {
+                oled_clear_display();
+                oled_update_display();
+                xSemaphoreGive(display_mutex);
+            }
+            event_manager_set_bits(EVENT_BIT_DISPLAY_WAKE); // Trigger display refresh
+        }
+    }
 }
 
 // State transition handlers
@@ -551,7 +647,7 @@ static display_state_t transition_settings_left(void)
 
 static display_state_t transition_settings_right(void)
 {
-    if (sm.menu_index < 5)
+    if (sm.menu_index < 7)
     {
         sm.menu_index++;
     }
@@ -581,6 +677,9 @@ static display_state_t transition_settings_confirm(void)
         action_change_contrast();
         return STATE_SETTINGS;
     case 6:
+        action_change_sleep_time();
+        return STATE_SETTINGS;
+    case 7:
         action_factory_settings();
         return STATE_SETTINGS;
     default:
@@ -692,6 +791,53 @@ static void action_change_contrast(void)
     oled_set_contrast(contrast);
 }
 
+static void action_change_sleep_time(void)
+{
+    uint32_t sleep_time = aquarium_data_get_display_sleep_time();
+    // Cycle through: 1, 2, 5, 10, 30, 0 (never)
+    switch (sleep_time)
+    {
+    case 1:
+        sleep_time = 2;
+        break;
+    case 2:
+        sleep_time = 5;
+        break;
+    case 5:
+        sleep_time = 10;
+        break;
+    case 10:
+        sleep_time = 30;
+        break;
+    case 30:
+        sleep_time = 0; // Never
+        break;
+    case 0:
+    default:
+        sleep_time = 1;
+        break;
+    }
+    aquarium_data_set_display_sleep_time(sleep_time);
+
+    // Update the sleep timer
+    if (sleep_timer != NULL)
+    {
+        if (sleep_time == 0)
+        {
+            // Never sleep - stop the timer
+            xTimerStop(sleep_timer, 0);
+        }
+        else
+        {
+            // Update timer period and restart
+            xTimerChangePeriod(sleep_timer, pdMS_TO_TICKS(sleep_time * 60000), 0);
+            xTimerReset(sleep_timer, 0);
+        }
+    }
+
+    ESP_LOGI(TAG, "Display sleep time set to %lu minutes", (unsigned long)sleep_time);
+}
+
 static void action_change_wifi(void)
 {
     ESP_LOGI(TAG, "Config: Change Credentials");
@@ -708,7 +854,15 @@ static void action_factory_settings(void)
 {
     ESP_LOGI(TAG, "Factory Settings: Resetting to defaults");
     aquarium_data_set_display_enabled(true, true, true, true);
-    aquarium_data_set_contrast(32); // Default contrast
+    aquarium_data_set_contrast(32);          // Default contrast
+    aquarium_data_set_display_sleep_time(1); // Default 1 minute
+
+    // Update sleep timer
+    if (sleep_timer != NULL)
+    {
+        xTimerChangePeriod(sleep_timer, pdMS_TO_TICKS(60000), 0);
+        xTimerReset(sleep_timer, 0);
+    }
 }
 
 static const struct
@@ -785,6 +939,7 @@ static void display_task(void *pvParameters)
             if (notification_value & EVENT_BIT_DISPLAY_WAKE)
             {
                 wake_display();
+                update_display();
             }
 
             if (notification_value & (EVENT_BIT_CONFIG_MODE | EVENT_BIT_PASSKEY_DISPLAY))
@@ -886,14 +1041,21 @@ void display_init(gpio_num_t scl_gpio, gpio_num_t sda_gpio)
         }
     }
 
-    sleep_timer = xTimerCreate("display_sleep", pdMS_TO_TICKS(60000), pdFALSE, NULL, sleep_timer_callback);
+    // Get initial sleep time from aquarium_data
+    uint32_t sleep_time_min = aquarium_data_get_display_sleep_time();
+    uint32_t sleep_time_ms = (sleep_time_min == 0) ? portMAX_DELAY : (sleep_time_min * 60000);
+
+    sleep_timer = xTimerCreate("display_sleep", pdMS_TO_TICKS(sleep_time_ms), pdFALSE, NULL, sleep_timer_callback);
     if (sleep_timer == NULL)
     {
         ESP_LOGE(TAG, "Failed to create sleep timer");
     }
     else
     {
-        xTimerStart(sleep_timer, 0);
+        if (sleep_time_min > 0)
+        {
+            xTimerStart(sleep_timer, 0);
+        }
     }
 
     xTaskCreate(
@@ -910,6 +1072,14 @@ void display_init(gpio_num_t scl_gpio, gpio_num_t sda_gpio)
         4096,
         NULL,
         5,
+        NULL);
+
+    xTaskCreate(
+        ph_measurement_confirmation_task,
+        "ph_confirmation_task",
+        2048,
+        NULL,
+        3,
         NULL);
 
     ESP_LOGI(TAG, "Display manager initialized");

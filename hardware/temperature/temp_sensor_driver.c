@@ -1,10 +1,8 @@
 #include "temp_sensor_driver.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "event_manager.h"
 #include <math.h>
 static const char *TAG = "temp_sensor";
 static gpio_num_t s_pin = GPIO_NUM_4; // default D4
@@ -12,22 +10,25 @@ static gpio_num_t s_pin = GPIO_NUM_4; // default D4
 // 1-Wire timing helpers
 static inline void ow_delay_us(uint32_t us) { esp_rom_delay_us(us); }
 
-static void ow_drive_low(void) {
+static void ow_drive_low(void)
+{
 	gpio_set_direction(s_pin, GPIO_MODE_OUTPUT);
 	gpio_set_level(s_pin, 0);
 }
 
-static void ow_release(void) {
+static void ow_release(void)
+{
 	gpio_set_direction(s_pin, GPIO_MODE_INPUT);
 }
 
 static int ow_read_level(void) { return gpio_get_level(s_pin); }
 
-static bool ow_reset(void) {
-    //wystawienie impulsu reset, czyli zwarciu linii danych na 480 μs do masy. 
+static bool ow_reset(void)
+{
+	// wystawienie impulsu reset, czyli zwarciu linii danych na 480 μs do masy.
 	ow_drive_low();
 	ow_delay_us(480);
-    //Następnie każde urządzenie slave potwierdza swoją obecność 
+	// Następnie każde urządzenie slave potwierdza swoją obecność
 	ow_release();
 	ow_delay_us(70);
 	int presence = !ow_read_level();
@@ -35,20 +36,25 @@ static bool ow_reset(void) {
 	return presence;
 }
 
-static void ow_write_bit(int bit) {
+static void ow_write_bit(int bit)
+{
 	ow_drive_low();
-	if (bit) {
+	if (bit)
+	{
 		ow_delay_us(6);
 		ow_release();
 		ow_delay_us(64);
-	} else {
+	}
+	else
+	{
 		ow_delay_us(60);
 		ow_release();
 		ow_delay_us(10);
 	}
 }
 
-static int ow_read_bit(void) {
+static int ow_read_bit(void)
+{
 	int b;
 	ow_drive_low();
 	ow_delay_us(6);
@@ -59,28 +65,26 @@ static int ow_read_bit(void) {
 	return b;
 }
 
-static void ow_write_byte(uint8_t v) {
-	for (int i = 0; i < 8; i++) {
+static void ow_write_byte(uint8_t v)
+{
+	for (int i = 0; i < 8; i++)
+	{
 		ow_write_bit((v >> i) & 0x01);
 	}
 }
 
-static uint8_t ow_read_byte(void) {
+static uint8_t ow_read_byte(void)
+{
 	uint8_t v = 0;
-	for (int i = 0; i < 8; i++) {
-		if (ow_read_bit()) v |= (1 << i);
+	for (int i = 0; i < 8; i++)
+	{
+		if (ow_read_bit())
+			v |= (1 << i);
 	}
 	return v;
 }
-static void temp_task(void *arg) {
-	uint32_t interval_ms = (uint32_t)(uintptr_t)arg;
-	float c;
-	while (1) {
-		event_manager_set_bits(EVENT_BIT_MEASURE_TEMP);
-		vTaskDelay(pdMS_TO_TICKS(interval_ms));
-	}
-}
-void temp_sensor_init(gpio_num_t pin) {
+void temp_sensor_init(gpio_num_t pin)
+{
 	s_pin = pin;
 	gpio_config_t cfg = {
 		.pin_bit_mask = 1ULL << s_pin,
@@ -94,15 +98,13 @@ void temp_sensor_init(gpio_num_t pin) {
 	ow_release();
 	bool present = ow_reset();
 	ESP_LOGI(TAG, "DS18B20 presence: %s", present ? "yes" : "no");
-
-    uint32_t interval_ms = 10000;
-	xTaskCreate(temp_task, "temp_log", 2048, (void *)(uintptr_t)interval_ms, 5, NULL);
 }
 
-float temp_sensor_read() 
+float temp_sensor_read()
 {
 	float out_celsius;
-	if (!ow_reset()) {
+	if (!ow_reset())
+	{
 		ESP_LOGW(TAG, "No presence pulse");
 		return NAN;
 	}
@@ -114,7 +116,8 @@ float temp_sensor_read()
 	// Use polling: wait until bus goes high (parasitic power needs strong pull-up; we just delay)
 	vTaskDelay(pdMS_TO_TICKS(750));
 
-	if (!ow_reset()) {
+	if (!ow_reset())
+	{
 		ESP_LOGW(TAG, "No presence after convert");
 		return NAN;
 	}
@@ -128,10 +131,7 @@ float temp_sensor_read()
 	// 12-bit resolution: each LSB = 0.0625°C
 	out_celsius = (float)raw * 0.0625f;
 	// Read remaining bytes to complete transaction (optional)
-	for (int i = 0; i < 7; i++) (void)ow_read_byte();
+	for (int i = 0; i < 7; i++)
+		(void)ow_read_byte();
 	return out_celsius;
 }
-
-
-
-
