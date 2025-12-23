@@ -30,7 +30,6 @@
 // pH Sensor
 #define GPIO_PH_OUTPUT 32
 #define GPIO_PH_TEMP_COMP 33
-// pH Sensor Power Control (powers sensor only during measurement)
 #define GPIO_PH_POWER 25
 
 // Power stabilization delay for pH sensor (ms)

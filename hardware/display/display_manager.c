@@ -158,17 +158,26 @@ static void reset_sleep_timer(void)
 static const char *get_time_string(time_t time_val)
 {
     static char time_str[32]; // Increased size to avoid truncation warning
-    if (time_val == 0)
+    // Check for 0 or invalid/uninitialized time (less than year 2001, which is 1000000000)
+    // This catches epoch time (0) and any small uninitialized values
+    if (time_val == 0 || time_val < 1000000000)
     {
         snprintf(time_str, sizeof(time_str), "Never");
     }
     else
     {
         struct tm *timeinfo = localtime(&time_val);
-        int ret = snprintf(time_str, sizeof(time_str), "%02d/%02d %02d:%02d",
-                           timeinfo->tm_mday, timeinfo->tm_mon + 1, // DD/MM
-                           timeinfo->tm_hour, timeinfo->tm_min);    // HH:MM
-        (void)ret;                                                  // Suppress unused variable warning
+        if (timeinfo == NULL)
+        {
+            snprintf(time_str, sizeof(time_str), "Never");
+        }
+        else
+        {
+            int ret = snprintf(time_str, sizeof(time_str), "%02d/%02d %02d:%02d",
+                               timeinfo->tm_mday, timeinfo->tm_mon + 1, // DD/MM
+                               timeinfo->tm_hour, timeinfo->tm_min);    // HH:MM
+            (void)ret;                                                  // Suppress unused variable warning
+        }
     }
     return time_str;
 }
@@ -755,7 +764,7 @@ static void action_change_contrast(void)
 {
     uint8_t contrast = aquarium_data_get_contrast();
     contrast += 32;
-    if (contrast == 255)
+    if (contrast == 0)
         contrast = 32;
     aquarium_data_set_contrast(contrast);
     oled_set_contrast(contrast);
@@ -764,7 +773,6 @@ static void action_change_contrast(void)
 static void action_change_sleep_time(void)
 {
     uint32_t sleep_time = aquarium_data_get_display_sleep_time();
-    // Cycle through: 1, 2, 5, 10, 30, 0 (never)
     switch (sleep_time)
     {
     case 1:

@@ -88,7 +88,33 @@ void aquarium_data_init(void)
         }
     }
 
-    load_from_nvs();
+    esp_err_t load_result = load_from_nvs();
+
+    // If NVS load failed (fresh flash), reset all values to defaults
+    if (load_result != ESP_OK)
+    {
+        if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
+        {
+            // Reset all values to defaults
+            g_data.temperature = 0.0f;
+            g_data.ph = 0.0f;
+            g_data.last_feed_time = 0;
+            g_data.last_temp_measurement_time = 0;
+            g_data.last_feed_success = false;
+            g_data.next_feed_time = 0;
+            g_data.temp_reading_interval_sec = 0;
+            g_data.feeding_interval_sec = 0;
+            g_data.display_contrast = 128;
+            g_data.font_size = 1;
+            g_data.line_height = 10;
+            g_data.temperature_display_enabled = true;
+            g_data.ph_display_enabled = true;
+            g_data.last_feeding_display_enabled = true;
+            g_data.next_feeding_display_enabled = true;
+            g_data.display_sleep_time_min = 1;
+            xSemaphoreGive(data_mutex);
+        }
+    }
 
     aquarium_data_set_font_size(1);
 

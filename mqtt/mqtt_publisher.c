@@ -118,17 +118,13 @@ static void feed_task(void *param)
         {
             aquarium_data_t data;
             aquarium_data_get(&data);
-            // Publish all feed attempts (success or failure), regardless of interval setting
             if (data.last_feed_time > 0)
             {
                 char msg[64];
-                struct tm *timeinfo = localtime(&data.last_feed_time);
                 const char *status = data.last_feed_success ? "success" : "failure";
-                // Format: timestamp,MM/DD HH:MM,status
-                snprintf(msg, sizeof(msg), "%lld,%02d/%02d %02d:%02d,%s",
+                // Format: timestamp,status
+                snprintf(msg, sizeof(msg), "%lld,%s",
                          (long long)data.last_feed_time,
-                         timeinfo->tm_mon + 1, timeinfo->tm_mday, // MM/DD
-                         timeinfo->tm_hour, timeinfo->tm_min,     // HH:MM
                          status);
                 int msg_id = esp_mqtt_client_enqueue(g_client, feed_topic, msg, 0, 1, 0, true);
                 if (msg_id >= 0)

@@ -5,6 +5,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include <time.h>
+
+#include "hardware_manager.h"
 
 static const char *TAG = "break_beam";
 static QueueHandle_t gpio_evt_queue = NULL;
@@ -22,7 +25,6 @@ static void IRAM_ATTR beam_isr(void *arg)
             portYIELD_FROM_ISR();
         }
     }
-    // Note: Cannot use ESP_LOG in ISR, but interrupt is being handled
 }
 
 void break_beam_monitor(void *pvParameters)
@@ -30,19 +32,11 @@ void break_beam_monitor(void *pvParameters)
     TaskHandle_t *task_handle = (TaskHandle_t *)pvParameters;
     uint32_t io_level;
 
-    if (task_handle == NULL)
+    if (gpio_evt_queue != NULL)
     {
-        ESP_LOGE(TAG, "Beam monitor task: NULL task handle pointer!");
-        vTaskDelete(NULL);
-        return;
-    }
-
-    if (gpio_evt_queue == NULL)
-    {
-        ESP_LOGE(TAG, "Beam monitor task: GPIO event queue is NULL!");
-        *task_handle = NULL;
-        vTaskDelete(NULL);
-        return;
+        while (xQueueReceive(gpio_evt_queue, &io_level, 0) == pdTRUE)
+        {
+        }
     }
 
     while (1)
@@ -51,6 +45,7 @@ void break_beam_monitor(void *pvParameters)
         {
             if (io_level == 0)
             {
+                ESP_LOGI(TAG, "Beam broken");
                 break;
             }
         }
@@ -97,13 +92,4 @@ void break_beam_init(gpio_num_t gpio)
         ESP_LOGE(TAG, "Failed to add ISR handler for GPIO %d: %s", (int)gpio, esp_err_to_name(ret));
         return;
     }
-}
-
-int break_beam_get_state(void)
-{
-    if (beam_gpio == GPIO_NUM_NC)
-    {
-        return -1; // Not initialized
-    }
-    return gpio_get_level(beam_gpio);
 }

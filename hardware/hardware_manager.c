@@ -36,8 +36,6 @@ static void feed_coordinator_task(void *pvParameters)
 
         if (bits & EVENT_BIT_FEED_SCHEDULED)
         {
-            ESP_LOGI(TAG, "Feed requested, starting feeding sequence");
-
             xTaskCreate(
                 break_beam_monitor,
                 "beam_monitor",
@@ -45,8 +43,6 @@ static void feed_coordinator_task(void *pvParameters)
                 &beam_task_handle,
                 5,
                 &beam_task_handle);
-
-            vTaskDelay(pdMS_TO_TICKS(100));
 
             bool feed_successful = false;
             for (int attempt = 1; attempt <= MAX_FEED_ATTEMPTS; attempt++)
@@ -114,7 +110,6 @@ static void sensor_measurement_task(void *pvParameters)
 
         if (bits & EVENT_BIT_MEASURE_TEMP)
         {
-            ESP_LOGI(TAG, "Measuring temperature on request");
             float temp_sum = 0.0f;
             int valid_readings = 0;
 
@@ -124,6 +119,11 @@ static void sensor_measurement_task(void *pvParameters)
                 if (!isnan(temp))
                 {
                     ESP_LOGI(TAG, "Temperature reading %d: %.2f°C", i + 1, temp);
+                    if (temp > 40.0f || temp < 10.0f)
+                    {
+                        ESP_LOGW(TAG, "Temperature reading %d out of range (%.2f°C)", i + 1, temp);
+                        continue;
+                    }
                     temp_sum += temp;
                     valid_readings++;
                 }
@@ -147,7 +147,6 @@ static void sensor_measurement_task(void *pvParameters)
 
         if (bits & EVENT_BIT_PH_MEASUREMENT_CONFIRMED)
         {
-            ESP_LOGI(TAG, "pH measurement confirmed - taking reading");
             gpio_set_level(GPIO_PH_POWER, 1);
             vTaskDelay(pdMS_TO_TICKS(PH_POWER_STABILIZE_MS));
 
@@ -195,7 +194,6 @@ static void temp_reading_scheduler_task(void *pvParameters)
                     wait_time_ms = (current_interval - elapsed) * 1000;
                 }
 
-                uint32_t notification_value;
                 if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_time_ms)) > 0)
                 {
                     break;
@@ -255,7 +253,6 @@ static void feeding_scheduler_task(void *pvParameters)
                     wait_time_ms = (current_interval - elapsed) * 1000;
                 }
 
-                uint32_t notification_value;
                 if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_time_ms)) > 0)
                 {
                     break;

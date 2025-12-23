@@ -6,7 +6,11 @@ import threading
 import time
 import json
 import os
+import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
 # Configuration
 BROKER = "10.177.164.196"
@@ -15,6 +19,18 @@ USER_ID = "f8e87394"
 TOPIC_SUBSCRIPTION = f"{USER_ID}/+/data/#"
 DEFAULT_MAC = "1C:69:20:A3:8F:F0"
 CONFIG_FILE = "aquatest_config.json"
+LOG_FILE = "mqtt_messages.log"
+
+# Setup logging (without automatic timestamps, we'll add them from payload)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()  # Also print to console
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class IoTApp:
     def __init__(self, root):
@@ -237,6 +253,8 @@ class IoTApp:
             # Topic format: user_id/mac/data/type
             parts = topic.split('/')
             
+            # Extract timestamp from payload for logging
+            log_timestamp = None
             if len(parts) >= 4 and parts[2] == 'data':
                 data_type = parts[3]
                 
@@ -250,7 +268,8 @@ class IoTApp:
                         if len(parts_temp) >= 2:
                             try:
                                 timestamp = int(parts_temp[1])
-                                timestamp_dt = datetime.fromtimestamp(timestamp)
+                                log_timestamp = timestamp
+                                timestamp_dt = datetime.fromtimestamp(timestamp, tz=WARSAW_TZ)
                                 timestamp_str = timestamp_dt.strftime(" (%H:%M:%S)")
                             except:
                                 pass
@@ -266,7 +285,8 @@ class IoTApp:
                         if len(parts_ph) >= 2:
                             try:
                                 timestamp = int(parts_ph[1])
-                                timestamp_dt = datetime.fromtimestamp(timestamp)
+                                log_timestamp = timestamp
+                                timestamp_dt = datetime.fromtimestamp(timestamp, tz=WARSAW_TZ)
                                 timestamp_str = timestamp_dt.strftime(" (%H:%M:%S)")
                             except:
                                 pass
@@ -274,50 +294,49 @@ class IoTApp:
                     except:
                         self.root.after(0, lambda: self.ph_var.set(payload))
                 elif data_type == 'feed':
-                    # Format: "timestamp,MM/DD HH:MM,status"
+                    # Format: "timestamp,status"
                     try:
                         parts_feed = payload.split(',')
-                        if len(parts_feed) >= 1:
-                            # Update last feed timestamp and formatted time
+                        if len(parts_feed) >= 2:
+                            # Extract timestamp and status
                             try:
                                 timestamp = int(parts_feed[0])
+                                log_timestamp = timestamp
                                 self.last_feed_timestamp = timestamp
-                            except:
-                                pass
-                            
-                            # Extract status (success/failure)
-                            status_str = ""
-                            if len(parts_feed) >= 3:
-                                status = parts_feed[2].strip().lower()
-                                if status == "success":
-                                    status_str = " ✓"
-                                elif status == "failure":
-                                    status_str = " ✗"
-                            
-                            if len(parts_feed) >= 2:
-                                # Extract MM/DD HH:MM format
-                                time_str = parts_feed[1]  # MM/DD HH:MM
+                                
+                                # Format timestamp to Warsaw timezone for display
+                                timestamp_dt = datetime.fromtimestamp(timestamp, tz=WARSAW_TZ)
+                                time_str = timestamp_dt.strftime("%m/%d %H:%M")  # MM/DD HH:MM
                                 self.last_feed_time_formatted = time_str
+                                
+                                # Extract status (success/failure)
+                                status = parts_feed[1].strip().lower()
+                                status_str = " ✓" if status == "success" else " ✗" if status == "failure" else ""
+                                
                                 # Display time part (HH:MM) with status in the monitor
-                                if ' ' in time_str:
-                                    time_only = time_str.split(' ')[1]  # Extract HH:MM
-                                    display_text = f"{time_only}{status_str}"
-                                    self.root.after(0, lambda t=display_text: self.feed_var.set(t))
-                                else:
-                                    display_text = f"{time_str}{status_str}"
-                                    self.root.after(0, lambda t=display_text: self.feed_var.set(t))
-                            else:
-                                display_text = f"{payload}{status_str}"
+                                time_only = timestamp_dt.strftime("%H:%M")
+                                display_text = f"{time_only}{status_str}"
                                 self.root.after(0, lambda t=display_text: self.feed_var.set(t))
-                            
-                            # Update next feed time display
-                            self.root.after(0, self.calculate_and_update_next_feed)
-                            # Save config with updated last feed time
-                            self.root.after(0, self.save_config)
-                            # Update config display
-                            self.root.after(0, self.update_config_display)
+                                
+                                # Update next feed time display
+                                self.root.after(0, self.calculate_and_update_next_feed)
+                                # Save config with updated last feed time
+                                self.root.after(0, self.save_config)
+                                # Update config display
+                                self.root.after(0, self.update_config_display)
+                            except Exception as e:
+                                print(f"Error parsing feed message: {e}")
+                                self.root.after(0, lambda: self.feed_var.set(payload))
                     except:
                         self.root.after(0, lambda: self.feed_var.set(payload))
+            
+            # Log message with timestamp from payload (or system time if not available)
+            if log_timestamp is not None:
+                timestamp_dt = datetime.fromtimestamp(log_timestamp, tz=WARSAW_TZ)
+                timestamp_str = timestamp_dt.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                timestamp_str = datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            logger.info(f"{timestamp_str} - MQTT Message - Topic: {topic}, Payload: {payload}")
                     
         except Exception as e:
             print(f"Error parsing message: {e}")
@@ -407,7 +426,7 @@ class IoTApp:
             next_feed_time = current_time + self.feeding_interval_sec
         
         # Format the next feed time
-        next_feed_dt = datetime.fromtimestamp(next_feed_time)
+        next_feed_dt = datetime.fromtimestamp(next_feed_time, tz=WARSAW_TZ)
         time_str = next_feed_dt.strftime("%H:%M:%S")
         self.next_feed_var.set(time_str)
     
@@ -447,9 +466,9 @@ class IoTApp:
                                 month_day = date_part.split('/')
                                 hour_min = time_part.split(':')
                                 if len(month_day) == 2 and len(hour_min) == 2:
-                                    current_year = datetime.now().year
+                                    current_year = datetime.now(WARSAW_TZ).year
                                     dt = datetime(current_year, int(month_day[0]), int(month_day[1]), 
-                                                 int(hour_min[0]), int(hour_min[1]))
+                                                 int(hour_min[0]), int(hour_min[1]), tzinfo=WARSAW_TZ)
                                     self.last_feed_timestamp = int(dt.timestamp())
                     except:
                         pass
@@ -458,7 +477,7 @@ class IoTApp:
                     try:
                         timestamp = config['last_feed_timestamp']
                         self.last_feed_timestamp = timestamp
-                        feed_dt = datetime.fromtimestamp(timestamp)
+                        feed_dt = datetime.fromtimestamp(timestamp, tz=WARSAW_TZ)
                         self.last_feed_time_formatted = feed_dt.strftime("%m/%d %H:%M")
                     except:
                         pass
