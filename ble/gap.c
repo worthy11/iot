@@ -1,9 +1,3 @@
-/*
- * SPDX-FileCopyrightText: 2024 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Unlicense OR CC0-1.0
- */
-/* Includes */
 #include "gap.h"
 #include "common.h"
 #include "gatt_svc.h"
@@ -17,7 +11,7 @@
 
 #include "event_manager.h"
 
-static const char *TAG = "gap";
+static const char *TAG = "GAP";
 
 inline static void format_addr(char *addr_str, uint8_t addr[]);
 static void start_advertising(void);
@@ -41,29 +35,55 @@ inline static void format_addr(char *addr_str, uint8_t addr[])
 
 static uint32_t generate_passkey(void)
 {
-    return (uint32_t)(esp_random() % 1000000);
+    // return (uint32_t)(esp_random() % 1000000);
+    return 111111;
 }
 
 static int ble_gap_passkey_action_cb(struct ble_gap_event *event, void *arg)
 {
     int rc = 0;
+    struct ble_gap_conn_desc desc;
 
     switch (event->passkey.params.action)
     {
     case BLE_SM_IOACT_DISP:
-        current_passkey = generate_passkey();
-        passkey_conn_handle = event->passkey.conn_handle;
-
-        ESP_LOGI(TAG, "Passkey: %06lu", (unsigned long)current_passkey);
-
-        event_manager_set_bits(EVENT_BIT_PASSKEY_DISPLAY);
-        struct ble_sm_io io_data = {
-            .action = BLE_SM_IOACT_DISP,
-            .passkey = current_passkey};
-        rc = ble_sm_inject_io(event->passkey.conn_handle, &io_data);
+        // Check if device is already bonded
+        rc = ble_gap_conn_find(event->passkey.conn_handle, &desc);
         if (rc != 0)
         {
-            ESP_LOGE(TAG, "Failed to inject passkey: %d (0x%04x)", rc, rc);
+            ESP_LOGE(TAG, "Failed to find connection for passkey: %d", rc);
+            return rc;
+        }
+
+        // Only display passkey if device is not bonded
+        if (!desc.sec_state.bonded)
+        {
+            current_passkey = generate_passkey();
+            passkey_conn_handle = event->passkey.conn_handle;
+
+            ESP_LOGI(TAG, "Passkey: %06lu", (unsigned long)current_passkey);
+
+            event_manager_set_bits(EVENT_BIT_PASSKEY_DISPLAY);
+            struct ble_sm_io io_data = {
+                .action = BLE_SM_IOACT_DISP,
+                .passkey = current_passkey};
+            rc = ble_sm_inject_io(event->passkey.conn_handle, &io_data);
+            if (rc != 0)
+            {
+                ESP_LOGE(TAG, "Failed to inject passkey: %d (0x%04x)", rc, rc);
+            }
+        }
+        else
+        {
+            ESP_LOGI(TAG, "Device is bonded, skipping passkey display");
+            // Still need to inject IO, but without displaying passkey
+            struct ble_sm_io io_data = {
+                .action = BLE_SM_IOACT_NONE};
+            rc = ble_sm_inject_io(event->passkey.conn_handle, &io_data);
+            if (rc != 0)
+            {
+                ESP_LOGE(TAG, "Failed to inject IO: %d (0x%04x)", rc, rc);
+            }
         }
         break;
     }
@@ -73,36 +93,25 @@ static int ble_gap_passkey_action_cb(struct ble_gap_event *event, void *arg)
 
 static void start_advertising(void)
 {
-    /* Local variables */
     int rc = 0;
     const char *name;
     struct ble_hs_adv_fields adv_fields = {0};
     struct ble_hs_adv_fields rsp_fields = {0};
     struct ble_gap_adv_params adv_params = {0};
-    /* Service UUIDs to advertise: Battery Service (0x180F) and custom WiFi Config Service */
+
     static const ble_uuid16_t adv_uuids16[] = {
         BLE_UUID16_INIT(0x180F)};
 
-    /* Set advertising flags */
     adv_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
 
-    /* Set device appearance - Generic (0x0000) or remove appearance field */
     adv_fields.appearance = 0x0000;
     adv_fields.appearance_is_present = 1;
 
-    /* Set device name in main advertising data (so clients can see it without scan response) */
     name = ble_svc_gap_device_name();
-    if (name == NULL)
-    {
-        ESP_LOGW(TAG, "Device name is NULL, using DEVICE_NAME directly");
-        name = DEVICE_NAME;
-    }
-    ESP_LOGI(TAG, "Advertising device name: %s", name);
     adv_fields.name = (uint8_t *)name;
     adv_fields.name_len = strlen(name);
     adv_fields.name_is_complete = 1;
 
-    /* Set advertiement fields */
     rc = ble_gap_adv_set_fields(&adv_fields);
     if (rc != 0)
     {
@@ -110,12 +119,10 @@ static void start_advertising(void)
         return;
     }
 
-    /* Advertise service UUIDs in scan response: HID Service and vendor service */
     rsp_fields.uuids16 = adv_uuids16;
     rsp_fields.num_uuids16 = sizeof(adv_uuids16) / sizeof(adv_uuids16[0]);
     rsp_fields.uuids16_is_complete = 1;
 
-    /* Set scan response fields */
     rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
     if (rc != 0)
     {
@@ -123,15 +130,12 @@ static void start_advertising(void)
         return;
     }
 
-    /* Set connectable and general discoverable mode */
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
-    /* Set advertising interval */
     adv_params.itvl_min = BLE_GAP_ADV_ITVL_MS(500);
     adv_params.itvl_max = BLE_GAP_ADV_ITVL_MS(510);
 
-    /* Start advertising */
     rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params,
                            gap_event_handler, NULL);
     if (rc != 0)
@@ -142,27 +146,16 @@ static void start_advertising(void)
     ESP_LOGI(TAG, "advertising started!");
 }
 
-/*
- * NimBLE applies an event-driven model to keep GAP service going
- * gap_event_handler is a callback function registered when calling
- * ble_gap_adv_start API and called when a GAP event arrives
- */
 static int gap_event_handler(struct ble_gap_event *event, void *arg)
 {
-    /* Local variables */
     int rc = 0;
     struct ble_gap_conn_desc desc;
 
-    /* Handle different GAP event */
     switch (event->type)
     {
-
-    /* Connect event */
     case BLE_GAP_EVENT_CONNECT:
-        /* A new connection was established or a connection attempt failed. */
         if (event->connect.status == 0)
         {
-            /* Check connection handle */
             rc = ble_gap_conn_find(event->connect.conn_handle, &desc);
             if (rc != 0)
             {
@@ -177,19 +170,18 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
             if (desc.sec_state.bonded)
             {
-                ESP_LOGI(TAG, "Device is already bonded, clearing bond to force passkey entry...");
-                ble_store_clear();
-                ESP_LOGI(TAG, "Bond cleared, disconnecting to force re-pairing with passkey...");
-                ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-                return rc;
+                ESP_LOGI(TAG, "Device is already bonded, using existing bond");
+                // If already bonded, encryption should be established automatically
+                // No need to display passkey or initiate security
             }
-
-            ESP_LOGI(TAG, "Initiating pairing/encryption...");
-            ble_store_clear();
-            rc = ble_gap_security_initiate(event->connect.conn_handle);
-            if (rc != 0)
+            else
             {
-                ESP_LOGE(TAG, "Failed to initiate security: %d", rc);
+                ESP_LOGI(TAG, "Device not bonded, initiating pairing/encryption...");
+                rc = ble_gap_security_initiate(event->connect.conn_handle);
+                if (rc != 0)
+                {
+                    ESP_LOGE(TAG, "Failed to initiate security: %d", rc);
+                }
             }
 
             struct ble_gap_upd_params params = {.itvl_min = desc.conn_itvl,
@@ -256,7 +248,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             current_passkey = 0;
         }
-
+        start_advertising();
         return rc;
 
     case BLE_GAP_EVENT_CONN_UPDATE:
@@ -285,10 +277,6 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         }
         return rc;
 
-    case BLE_GAP_EVENT_SUBSCRIBE:
-        gatt_svr_subscribe_cb(event);
-        return rc;
-
     case BLE_GAP_EVENT_MTU:
         return rc;
     }
@@ -296,14 +284,11 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
     return rc;
 }
 
-/* Public functions */
 void adv_init(void)
 {
-    /* Local variables */
     int rc = 0;
     char addr_str[18] = {0};
 
-    /* Make sure we have proper BT identity address set (random preferred) */
     rc = ble_hs_util_ensure_addr(0);
     if (rc != 0)
     {
@@ -311,7 +296,6 @@ void adv_init(void)
         return;
     }
 
-    /* Figure out BT address to use while advertising (no privacy for now) */
     rc = ble_hs_id_infer_auto(0, &own_addr_type);
     if (rc != 0)
     {
@@ -319,7 +303,6 @@ void adv_init(void)
         return;
     }
 
-    /* Printing ADDR */
     rc = ble_hs_id_copy_addr(own_addr_type, addr_val, NULL);
     if (rc != 0)
     {
@@ -329,36 +312,23 @@ void adv_init(void)
     format_addr(addr_str, addr_val);
     ESP_LOGI(TAG, "device address: %s", addr_str);
 
-    /* Start advertising. */
     start_advertising();
 }
 
 int gap_init(void)
 {
-    /* Local variables */
     int rc = 0;
 
-    /* Call NimBLE GAP initialization API */
     ble_svc_gap_init();
 
-    /* Set GAP device name */
     rc = ble_svc_gap_device_name_set(DEVICE_NAME);
-    if (rc != 0)
-    {
-        ESP_LOGE(TAG, "failed to set device name to %s, error code: %d",
-                 DEVICE_NAME, rc);
-        return rc;
-    }
 
-    /* Configure security manager for passkey pairing */
     ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_DISP_ONLY; // Display only - show passkey
-    ble_hs_cfg.sm_bonding = 0;                      // Enable bonding
+    ble_hs_cfg.sm_bonding = 1;                      // Enable bonding
     ble_hs_cfg.sm_mitm = 1;                         // Require MITM protection (passkey)
     ble_hs_cfg.sm_sc = 0;                           // Legacy pairing (not secure connections)
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-
-    // No need to seed - using ESP32 hardware RNG (esp_random) for passkey generation
 
     return rc;
 }

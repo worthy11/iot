@@ -2,23 +2,21 @@
 #include "common.h"
 #include "host/ble_gatt.h"
 #include "services/gatt/ble_svc_gatt.h"
-#include "battery_service.h"
 #include "wifi_config_service.h"
-#include "esp_log.h"
+#include "device_provisioning_service.h"
 
-static const char *TAG = "gatt_svc";
+static const char *TAG = "GATT_SVC";
 
-static struct ble_gatt_svc_def gatt_svr_svcs[16]; /* Adjust size as needed */
+static struct ble_gatt_svc_def gatt_svr_svcs[16];
 static int gatt_svr_svcs_count = 0;
 
 static void build_combined_svc_def(void)
 {
     int i, j;
     const struct ble_gatt_svc_def *all_svc_defs[] = {
-        battery_service_get_svc_def(),
         wifi_config_service_get_svc_def(),
+        device_provisioning_service_get_svc_def(),
         NULL};
-
     gatt_svr_svcs_count = 0;
 
     for (i = 0; all_svc_defs[i] != NULL; i++)
@@ -34,40 +32,16 @@ static void build_combined_svc_def(void)
         }
     }
 
-    /* Terminate array */
     gatt_svr_svcs[gatt_svr_svcs_count].type = 0;
-}
-
-void gatt_svr_subscribe_cb(struct ble_gap_event *event)
-{
-    battery_service_subscribe_cb(event);
 }
 
 int gatt_svc_init(void)
 {
     int rc;
 
-    rc = battery_service_init();
-    if (rc != 0)
-    {
-        ESP_LOGE(TAG, "Failed to initialize battery service: %d", rc);
-        return rc;
-    }
-
-    rc = wifi_config_service_init();
-    if (rc != 0)
-    {
-        ESP_LOGE(TAG, "Failed to initialize WiFi config service: %d", rc);
-        return rc;
-    }
-
-    /* 1. GATT service initialization */
     ble_svc_gatt_init();
-
-    /* 2. Build combined service definition */
     build_combined_svc_def();
 
-    /* 3. Update GATT services counter */
     rc = ble_gatts_count_cfg(gatt_svr_svcs);
     if (rc != 0)
     {
@@ -75,7 +49,6 @@ int gatt_svc_init(void)
         return rc;
     }
 
-    /* 4. Add GATT services */
     rc = ble_gatts_add_svcs(gatt_svr_svcs);
     if (rc != 0)
     {

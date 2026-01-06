@@ -9,10 +9,6 @@
 #include "driver/uart.h"
 
 #include "event_manager.h"
-#include "wifi/wifi_manager.h"
-#include "ble/gatt_server.h"
-#include "mqtt/mqtt_publisher.h"
-#include "hardware/hardware_manager.h"
 
 static const char *TAG = "main";
 
@@ -27,8 +23,4 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     event_manager_init();
-    wifi_manager_init();
-    ble_manager_init();
-    init_mqtt();
-    hardware_init();
 }

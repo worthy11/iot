@@ -2,6 +2,8 @@
 #include "gap.h"
 #include "gatt_svc.h"
 #include "host/ble_gap.h"
+#include "host/ble_store.h"
+#include "store/config/ble_store_config.h"
 #include "event_manager.h"
 #include "freertos/timers.h"
 
@@ -9,14 +11,14 @@
 
 static const char *TAG = "gatt_server";
 
-void ble_store_config_init(void);
+static TaskHandle_t nimble_host_task_handle = NULL;
 
 static void on_stack_reset(int reason);
 static void on_stack_sync(void);
 static void nimble_host_config_init(void);
 static void nimble_host_task(void *param);
-static void start_gatt_server();
-static void stop_gatt_server();
+void gatt_server_init(void);
+void ble_store_config_init(void);
 
 static void on_stack_reset(int reason)
 {
@@ -25,7 +27,7 @@ static void on_stack_reset(int reason)
 
 static void on_stack_sync(void)
 {
-    adv_init();
+    ESP_LOGI(TAG, "NimBLE stack synchronized");
 }
 
 static void nimble_host_config_init(void)
@@ -37,96 +39,6 @@ static void nimble_host_config_init(void)
     ble_store_config_init();
 }
 
-static TaskHandle_t nimble_host_task_handle = NULL;
-static TimerHandle_t gatt_timeout_timer = NULL;
-static bool gatt_server_active = false;
-
-static void gatt_timeout_callback(TimerHandle_t xTimer)
-{
-    ESP_LOGI(TAG, "GATT server timeout reached, stopping...");
-    stop_gatt_server();
-    gatt_server_active = false;
-    event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
-
-    if (gatt_timeout_timer != NULL)
-    {
-        xTimerDelete(gatt_timeout_timer, 0);
-        gatt_timeout_timer = NULL;
-    }
-}
-
-static void gatt_server_manager_task(void *param)
-{
-    while (1)
-    {
-        EventBits_t bits = event_manager_wait_bits(
-            EVENT_BIT_CONFIG_BUTTON_PRESSED | EVENT_BIT_WIFI_CONFIG_SAVED,
-            true,  // Clear on exit
-            false, // Wait for any
-            portMAX_DELAY);
-
-        if (bits & EVENT_BIT_WIFI_CONFIG_SAVED)
-        {
-            if (gatt_server_active)
-            {
-                ESP_LOGI(TAG, "WiFi config saved, stopping GATT server...");
-                stop_gatt_server();
-                gatt_server_active = false;
-                event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
-
-                if (gatt_timeout_timer != NULL)
-                {
-                    xTimerStop(gatt_timeout_timer, 0);
-                    xTimerDelete(gatt_timeout_timer, 0);
-                    gatt_timeout_timer = NULL;
-                }
-            }
-        }
-        else if (bits & EVENT_BIT_CONFIG_BUTTON_PRESSED)
-        {
-            if (!gatt_server_active)
-            {
-                start_gatt_server();
-                gatt_server_active = true;
-                event_manager_set_bits(EVENT_BIT_CONFIG_MODE);
-
-                if (gatt_timeout_timer == NULL)
-                {
-                    gatt_timeout_timer = xTimerCreate(
-                        "gatt_timeout",
-                        pdMS_TO_TICKS(GATT_SERVER_TIMEOUT_MS),
-                        pdFALSE, // One-shot timer
-                        NULL,
-                        gatt_timeout_callback);
-
-                    if (gatt_timeout_timer != NULL)
-                    {
-                        xTimerStart(gatt_timeout_timer, 0);
-                        ESP_LOGI(TAG, "GATT server will auto-stop in 10 minutes");
-                    }
-                    else
-                    {
-                        ESP_LOGE(TAG, "Failed to create timeout timer");
-                    }
-                }
-            }
-            else
-            {
-                stop_gatt_server();
-                gatt_server_active = false;
-                event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
-
-                if (gatt_timeout_timer != NULL)
-                {
-                    xTimerStop(gatt_timeout_timer, 0);
-                    xTimerDelete(gatt_timeout_timer, 0);
-                    gatt_timeout_timer = NULL;
-                }
-            }
-        }
-    }
-}
-
 static void nimble_host_task(void *param)
 {
     nimble_port_run();
@@ -134,29 +46,15 @@ static void nimble_host_task(void *param)
     vTaskDelete(NULL);
 }
 
-static void start_gatt_server(void)
+void gatt_server_init(void)
 {
     int rc;
     esp_err_t ret;
 
-    ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-        ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
-    {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "failed to initialize nvs flash, error code: %d ", ret);
-        return;
-    }
-
     ret = nimble_port_init();
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "failed to initialize nimble stack, error code: %d ",
-                 ret);
+        ESP_LOGE(TAG, "failed to initialize nimble stack, error code: %d ", ret);
         return;
     }
 
@@ -175,12 +73,18 @@ static void start_gatt_server(void)
     }
 
     nimble_host_config_init();
-    xTaskCreate(nimble_host_task, "NimBLE Host", 4 * 1024, NULL, 5, &nimble_host_task_handle);
-    ESP_LOGI(TAG, "GATT server started");
-    return;
+    xTaskCreate(nimble_host_task, "NimBLE Host", 8 * 1024, NULL, 5, &nimble_host_task_handle);
+    ESP_LOGI(TAG, "NimBLE stack initialized");
 }
 
-static void stop_gatt_server(void)
+void start_gatt_server(void)
+{
+
+    adv_init();
+    ESP_LOGI(TAG, "GATT server advertising started");
+}
+
+void stop_gatt_server(void)
 {
     int rc;
 
@@ -189,33 +93,8 @@ static void stop_gatt_server(void)
     {
         ESP_LOGW(TAG, "Failed to stop advertising, error code: %d", rc);
     }
-
-    nimble_port_stop();
-
-    if (nimble_host_task_handle != NULL)
+    else
     {
-        vTaskDelay(pdMS_TO_TICKS(100)); // Give task time to clean up
-        if (nimble_host_task_handle != NULL)
-        {
-            vTaskDelete(nimble_host_task_handle);
-            nimble_host_task_handle = NULL;
-        }
+        ESP_LOGI(TAG, "GATT server advertising stopped");
     }
-
-    nimble_port_deinit();
-    gatt_server_active = false;
-    ESP_LOGI(TAG, "GATT server stopped");
-}
-
-void ble_manager_init(void)
-{
-    xTaskCreate(
-        gatt_server_manager_task,
-        "ble_manager",
-        4096,
-        NULL,
-        5,
-        NULL);
-
-    ESP_LOGI(TAG, "BLE manager initialized");
 }

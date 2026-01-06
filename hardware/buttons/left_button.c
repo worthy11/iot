@@ -7,7 +7,7 @@ void left_button_init(gpio_num_t gpio)
 {
     static button_config_t config = {
         .name = "left_button",
-        .press_event_bit = EVENT_BIT_DISPLAY_LEFT,
+        .press_event_bit = EVENT_BIT_DISPLAY_PREV,
         .long_press_event_bit = 0, // No long press
         .debounce_ms = BUTTON_DEBOUNCE_MS,
         .long_press_ms = 0, // Disable long press

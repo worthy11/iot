@@ -72,7 +72,8 @@ static esp_err_t load_from_nvs(void)
     }
 
     nvs_close(handle);
-    ESP_LOGI(TAG, "Loaded aquarium data from NVS");
+    ESP_LOGI(TAG, "Loaded aquarium data from NVS: temp=%.1f, ph=%.2f, last_feed=%ld",
+             g_data.temperature, g_data.ph, (long)g_data.last_feed_time);
     return ESP_OK;
 }
 
@@ -139,6 +140,7 @@ void aquarium_data_update_temperature(float temp)
     {
         g_data.temperature = temp;
         g_data.last_temp_measurement_time = time(NULL);
+        save_to_nvs();
         xSemaphoreGive(data_mutex);
     }
 }
@@ -148,6 +150,7 @@ void aquarium_data_update_ph(float ph)
     if (data_mutex && xSemaphoreTake(data_mutex, portMAX_DELAY) == pdTRUE)
     {
         g_data.ph = ph;
+        save_to_nvs();
         xSemaphoreGive(data_mutex);
     }
 }
@@ -158,6 +161,7 @@ void aquarium_data_update_last_feed(time_t feed_time, bool success)
     {
         g_data.last_feed_time = feed_time;
         g_data.last_feed_success = success;
+        ESP_LOGI(TAG, "Updating last feed time: %ld, success: %d", (long)feed_time, success);
         save_to_nvs();
         xSemaphoreGive(data_mutex);
     }

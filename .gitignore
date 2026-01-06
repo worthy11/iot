@@ -55,3 +55,11 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# AWS IoT Core Certificates (DO NOT COMMIT)
+*.pem
+*.crt
+*.key
+mqtt/certificates/*.pem
+mqtt/certificates/*.crt
+mqtt/certificates/*.key

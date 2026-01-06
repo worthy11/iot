@@ -21,8 +21,6 @@ static void button_task(void *pvParameters)
     TickType_t last_press_time = 0;
     TickType_t release_stable_time = 0;
 
-    ESP_LOGI(TAG, "Button task started for %s (GPIO %d)", config->name, config->gpio);
-
     while (1)
     {
         current_state = gpio_get_level(config->gpio);
@@ -70,10 +68,6 @@ static void button_task(void *pvParameters)
             if (!long_press_detected && config->press_event_bit != 0)
             {
                 event_manager_set_bits(config->press_event_bit);
-                if (config->press_event_bit & (EVENT_BIT_DISPLAY_LEFT | EVENT_BIT_DISPLAY_RIGHT | EVENT_BIT_DISPLAY_CONFIRM))
-                {
-                    event_manager_set_bits(EVENT_BIT_DISPLAY_WAKE);
-                }
             }
 
             button_pressed = false;
@@ -93,7 +87,7 @@ void button_init(const button_config_t *config)
     gpio_set_direction(config->gpio, GPIO_MODE_INPUT);
     gpio_set_pull_mode(config->gpio, GPIO_PULLUP_ONLY);
 
-    BaseType_t result = xTaskCreate(
+    xTaskCreate(
         button_task,
         config->name,
         config->task_stack_size,

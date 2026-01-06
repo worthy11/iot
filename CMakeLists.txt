@@ -3,27 +3,29 @@ idf_component_register(SRCS "main.c"
                            
                            "wifi/wifi_manager.c"
                            
-                           "ble/battery_service.c"
-                           "ble/device_info_service.c"
                            "ble/gap.c"
                            "ble/gatt_server.c"
                            "ble/gatt_svc.c"
                            "ble/wifi_config_service.c"
+                           "ble/device_provisioning_service.c"
+                           "ble/ble_manager.c"
+                           "utils/nvs_utils.c"
                            
-                           "mqtt/mqtt_publisher.c"
-
-                           "hardware/hardware_manager.c"
+                           "mqtt/mqtt_manager.c"
+                           
                            "hardware/buttons/button.c"
                            "hardware/buttons/left_button.c"
                            "hardware/buttons/confirm_button.c"
                            "hardware/buttons/right_button.c"
-                           "hardware/display/display_manager.c"
+                           "hardware/display/display_driver.c"
                            "hardware/display/ssd1306.c"
                            "hardware/feeder/beam_driver.c"
                            "hardware/feeder/motor_driver.c"
                            "hardware/ph/ph_sensor_driver.c"
                            "hardware/temperature/temp_sensor_driver.c"
+                           "hardware/hardware_manager.c"
+                           
                            "data/aquarium_data.c"
                            
-                    INCLUDE_DIRS "." "wifi" "ble" "hardware" "mqtt" "data"
-                    REQUIRES esp_wifi console nvs_flash driver bt mqtt esp_adc)
+                    INCLUDE_DIRS "." "wifi" "ble" "utils" "hardware" "mqtt" "data"
+                    REQUIRES esp_wifi console nvs_flash driver bt mqtt esp_adc json)

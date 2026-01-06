@@ -5,6 +5,7 @@
 #include "host/ble_uuid.h"
 #include "wifi_manager.h"
 #include "event_manager.h"
+#include "utils/nvs_utils.h"
 #include <string.h>
 
 static const char *TAG = "wifi_cfg_svc";
@@ -153,49 +154,35 @@ static int wifi_config_write_cb(uint16_t conn_handle, uint16_t attr_handle,
     ble_hs_mbuf_to_flat(om, buf, len, NULL);
     buf[len] = '\0';
 
-    if (ble_uuid_cmp(uuid, &WIFI_PASS_UUID.u) == 0)
+    if (ble_uuid_cmp(uuid, &WIFI_SSID_UUID.u) == 0)
+    {
+        size_t copy_len = len < (int)sizeof(s_pending_ssid) - 1 ? (size_t)len : sizeof(s_pending_ssid) - 1;
+        memcpy(s_pending_ssid, buf, copy_len);
+        s_pending_ssid[copy_len] = '\0';
+        ESP_LOGI(TAG, "SSID received (pending)");
+    }
+    else if (ble_uuid_cmp(uuid, &WIFI_PASS_UUID.u) == 0)
     {
         size_t copy_len = len < (int)sizeof(s_pending_pass) - 1 ? (size_t)len : sizeof(s_pending_pass) - 1;
         memcpy(s_pending_pass, buf, copy_len);
         s_pending_pass[copy_len] = '\0';
-        ESP_LOGI(TAG, "Password received (pending, not saved yet)");
+        ESP_LOGI(TAG, "Password received (pending)");
     }
     else if (ble_uuid_cmp(uuid, &WIFI_APPLY_UUID.u) == 0)
     {
-        if (len > 0 && buf[0] == 0x01)
+        esp_err_t err = nvs_save_wifi_credentials(s_pending_ssid, s_pending_pass);
+        if (err == ESP_OK)
         {
-            const char *current_ssid = wifi_manager_get_current_ssid();
-            const char *current_pass = wifi_manager_get_current_password();
-
-            const char *ssid_to_use = (strlen(s_pending_ssid) > 0) ? s_pending_ssid : current_ssid;
-            const char *pass_to_use = (strlen(s_pending_pass) > 0) ? s_pending_pass : current_pass;
-
-            // Use empty strings if nothing is available - this will clear credentials
-            const char *final_ssid = ssid_to_use ? ssid_to_use : "";
-            const char *final_pass = pass_to_use ? pass_to_use : "";
-
-            esp_err_t err = wifi_manager_save_credentials(final_ssid, final_pass);
-            if (err == ESP_OK)
-            {
-                ESP_LOGI(TAG, "WiFi credentials saved successfully.");
-                event_manager_set_bits(EVENT_BIT_WIFI_CONFIG_SAVED);
-            }
-            else
-            {
-                ESP_LOGE(TAG, "Failed to save WiFi credentials: %s", esp_err_to_name(err));
-            }
-            memset(s_pending_ssid, 0, sizeof(s_pending_ssid));
-            memset(s_pending_pass, 0, sizeof(s_pending_pass));
+            ESP_LOGI(TAG, "WiFi credentials saved successfully");
         }
+        else
+        {
+            ESP_LOGE(TAG, "Failed to save WiFi credentials: %s", esp_err_to_name(err));
+        }
+        event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
+        event_manager_set_bits(EVENT_BIT_PROVISION_TRIGGER);
     }
 
-    return 0;
-}
-
-int wifi_config_service_init(void)
-{
-    memset(s_pending_ssid, 0, sizeof(s_pending_ssid));
-    memset(s_pending_pass, 0, sizeof(s_pending_pass));
     return 0;
 }
 

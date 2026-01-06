@@ -6,6 +6,14 @@
 #include "freertos/event_groups.h"
 #include "driver/gpio.h"
 
+#include "buttons/left_button.h"
+#include "buttons/confirm_button.h"
+#include "buttons/right_button.h"
+#include "feeder/beam_driver.h"
+#include "feeder/motor_driver.h"
+#include "ph/ph_sensor_driver.h"
+#include "temperature/temp_sensor_driver.h"
+
 // Hardware manager event group bits
 #define HARDWARE_BIT_FEED_SUCCESS BIT0
 #define HARDWARE_BIT_FEED_FAILURE BIT1
@@ -42,16 +50,24 @@
 // Temperature Sensor
 #define GPIO_TEMP_SENSOR 4
 
-#include "buttons/left_button.h"
-#include "buttons/confirm_button.h"
-#include "buttons/right_button.h"
-#include "display/display_manager.h"
-#include "feeder/beam_driver.h"
-#include "feeder/motor_driver.h"
-#include "ph/ph_sensor_driver.h"
-#include "temperature/temp_sensor_driver.h"
+void hardware_manager_init(void);
 
-void hardware_init();
-EventGroupHandle_t hardware_manager_get_event_group(void);
+void hardware_manager_display_interrupt(void);
+void hardware_manager_display_interrupt_with_value(float value, bool is_temp);
+void hardware_manager_display_update(void);
+void hardware_manager_display_wake(void);
+void hardware_manager_display_next(void);
+void hardware_manager_display_prev(void);
+void hardware_manager_display_confirm(void);
+
+float hardware_manager_measure_temp(void);
+float hardware_manager_measure_ph(void);
+
+void hardware_manager_set_temp_reading_interval(uint32_t interval_seconds);
+void hardware_manager_set_feeding_interval(uint32_t interval_seconds);
+
+void hardware_manager_motor_rotate_portion(bool direction);
+void hardware_manager_start_beam_monitor(TaskHandle_t *task_handle);
+void hardware_manager_stop_beam_monitor(TaskHandle_t task_handle);
 
 #endif
