@@ -9,6 +9,7 @@
 #include "driver/uart.h"
 
 #include "event_manager.h"
+#include "utils/fs_utils.h"
 
 static const char *TAG = "main";
 
@@ -21,6 +22,13 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // Initialize SPIFFS filesystem
+    ret = fs_utils_init();
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to initialize filesystem: %s", esp_err_to_name(ret));
+    }
 
     event_manager_init();
 }

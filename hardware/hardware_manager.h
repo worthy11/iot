@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "driver/gpio.h"
+#include <time.h>
 
 #include "buttons/left_button.h"
 #include "buttons/confirm_button.h"
@@ -27,6 +28,7 @@
 
 // Break Beam Sensor
 #define GPIO_BREAK_BEAM 23
+#define GPIO_BREAK_BEAM_POWER 26
 
 // Stepper Motor
 #define GPIO_MOTOR_IN1 16
@@ -52,8 +54,7 @@
 
 void hardware_manager_init(void);
 
-void hardware_manager_display_interrupt(void);
-void hardware_manager_display_interrupt_with_value(float value, bool is_temp);
+void hardware_manager_display_event(const char *event, float value);
 void hardware_manager_display_update(void);
 void hardware_manager_display_wake(void);
 void hardware_manager_display_next(void);
@@ -62,12 +63,6 @@ void hardware_manager_display_confirm(void);
 
 float hardware_manager_measure_temp(void);
 float hardware_manager_measure_ph(void);
-
-void hardware_manager_set_temp_reading_interval(uint32_t interval_seconds);
-void hardware_manager_set_feeding_interval(uint32_t interval_seconds);
-
-void hardware_manager_motor_rotate_portion(bool direction);
-void hardware_manager_start_beam_monitor(TaskHandle_t *task_handle);
-void hardware_manager_stop_beam_monitor(TaskHandle_t task_handle);
+bool hardware_manager_feed(void);
 
 #endif

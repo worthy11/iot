@@ -2,8 +2,9 @@
 #include "common.h"
 #include "host/ble_gatt.h"
 #include "services/gatt/ble_svc_gatt.h"
-#include "wifi_config_service.h"
-#include "device_provisioning_service.h"
+#include "provisioning_service.h"
+#include "telemetry_service.h"
+#include "command_service.h"
 
 static const char *TAG = "GATT_SVC";
 
@@ -14,8 +15,9 @@ static void build_combined_svc_def(void)
 {
     int i, j;
     const struct ble_gatt_svc_def *all_svc_defs[] = {
-        wifi_config_service_get_svc_def(),
-        device_provisioning_service_get_svc_def(),
+        provisioning_service_get_svc_def(),
+        telemetry_service_get_svc_def(),
+        command_service_get_svc_def(),
         NULL};
     gatt_svr_svcs_count = 0;
 

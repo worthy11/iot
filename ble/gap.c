@@ -3,6 +3,7 @@
 #include "gatt_svc.h"
 #include "host/ble_sm.h"
 #include "host/ble_store.h"
+#include "host/ble_att.h"
 #include "store/config/ble_store_config.h"
 #include <stdlib.h>
 #include <time.h>
@@ -10,6 +11,8 @@
 #include "esp_random.h"
 
 #include "event_manager.h"
+
+#define PREFERRED_MTU 512 // Request larger MTU for faster data transfer
 
 static const char *TAG = "GAP";
 
@@ -35,8 +38,7 @@ inline static void format_addr(char *addr_str, uint8_t addr[])
 
 static uint32_t generate_passkey(void)
 {
-    // return (uint32_t)(esp_random() % 1000000);
-    return 111111;
+    return (uint32_t)(esp_random() % 1000000);
 }
 
 static int ble_gap_passkey_action_cb(struct ble_gap_event *event, void *arg)
@@ -165,22 +167,41 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                 return rc;
             }
 
+            // Set preferred MTU for larger data chunks
+            rc = ble_att_set_preferred_mtu(PREFERRED_MTU);
+            if (rc != 0)
+            {
+                ESP_LOGW(TAG, "Failed to set preferred MTU: %d (will use default)", rc);
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Preferred MTU set to %d", PREFERRED_MTU);
+            }
+
             ESP_LOGI(TAG, "Connection security: encrypted=%d, authenticated=%d, bonded=%d",
                      desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
 
             if (desc.sec_state.bonded)
             {
                 ESP_LOGI(TAG, "Device is already bonded, using existing bond");
-                // If already bonded, encryption should be established automatically
-                // No need to display passkey or initiate security
+                event_manager_set_bits(EVENT_BIT_BLE_CONNECTED);
             }
             else
             {
-                ESP_LOGI(TAG, "Device not bonded, initiating pairing/encryption...");
-                rc = ble_gap_security_initiate(event->connect.conn_handle);
-                if (rc != 0)
+                ESP_LOGI(TAG, "Device not bonded");
+                if (event_manager_get_bits() & EVENT_BIT_PAIRING_MODE)
                 {
-                    ESP_LOGE(TAG, "Failed to initiate security: %d", rc);
+                    ESP_LOGI(TAG, "In pairing mode, initiating pairing/encryption...");
+                    rc = ble_gap_security_initiate(event->connect.conn_handle);
+                    if (rc != 0)
+                    {
+                        ESP_LOGE(TAG, "Failed to initiate security: %d", rc);
+                    }
+                }
+                else
+                {
+                    ESP_LOGI(TAG, "Not in pairing mode, rejecting unpaired device");
+                    ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
                 }
             }
 
@@ -208,7 +229,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         }
         else
         {
-            start_advertising();
+            ESP_LOGW(TAG, "Connection failed with status: %d", event->connect.status);
         }
         return rc;
 
@@ -230,6 +251,13 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                     passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
                     current_passkey = 0;
                 }
+                // If in pairing mode and encryption successful, device is now paired
+                if (event_manager_get_bits() & EVENT_BIT_PAIRING_MODE)
+                {
+                    // Device successfully paired - set connected bit so pairing task can continue
+                    ESP_LOGI(TAG, "Device successfully paired in pairing mode");
+                    event_manager_set_bits(EVENT_BIT_PAIRING_SUCCESS);
+                }
             }
             else if (event->enc_change.status != 0)
             {
@@ -248,7 +276,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             current_passkey = 0;
         }
-        start_advertising();
+        event_manager_set_bits(EVENT_BIT_BLE_DISCONNECTED);
         return rc;
 
     case BLE_GAP_EVENT_CONN_UPDATE:
@@ -278,6 +306,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         return rc;
 
     case BLE_GAP_EVENT_MTU:
+        ESP_LOGI(TAG, "MTU exchange complete: conn_handle=%d, mtu=%d",
+                 event->mtu.conn_handle, event->mtu.value);
         return rc;
     }
 

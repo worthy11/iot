@@ -1,8 +1,7 @@
 #include "ble_manager.h"
 #include "esp_log.h"
 #include "gatt_server.h"
-#include "wifi_config_service.h"
-#include "device_provisioning_service.h"
+#include "telemetry_service.h"
 #include "gap.h"
 
 static const char *TAG = "ble_manager";
@@ -25,4 +24,19 @@ uint32_t ble_manager_get_passkey(void)
 void ble_manager_init(void)
 {
     gatt_server_init();
+}
+
+void ble_manager_notify_temperature(float temperature)
+{
+    telemetry_service_notify_temperature(temperature);
+}
+
+void ble_manager_notify_ph(float ph)
+{
+    telemetry_service_notify_ph(ph);
+}
+
+void ble_manager_notify_feed(bool success)
+{
+    telemetry_service_notify_feed(success);
 }

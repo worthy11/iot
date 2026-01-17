@@ -26,30 +26,24 @@ typedef struct
 #define WIFI_CONFIG_NAMESPACE "wifi_cfg"
 
 static app_wifi_config_t current_cfg = {0};
-
 static esp_err_t wifi_config_load(app_wifi_config_t *out_cfg)
 {
     if (!out_cfg)
         return ESP_ERR_INVALID_ARG;
 
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(WIFI_CONFIG_NAMESPACE, NVS_READONLY, &handle);
+    size_t size;
+
+    size = sizeof(out_cfg->ssid);
+    esp_err_t err = nvs_load_blob(WIFI_CONFIG_NAMESPACE, "ssid", out_cfg->ssid, &size);
     if (err != ESP_OK)
         return err;
 
-    size_t ssid_len = sizeof(out_cfg->ssid);
-    size_t pass_len = sizeof(out_cfg->password);
-
-    err = nvs_get_str(handle, "ssid", out_cfg->ssid, &ssid_len);
+    size = sizeof(out_cfg->password);
+    err = nvs_load_blob(WIFI_CONFIG_NAMESPACE, "pass", out_cfg->password, &size);
     if (err != ESP_OK)
-    {
-        nvs_close(handle);
         return err;
-    }
 
-    err = nvs_get_str(handle, "pass", out_cfg->password, &pass_len);
-    nvs_close(handle);
-    return err;
+    return ESP_OK;
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
@@ -61,7 +55,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     }
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
-        ESP_LOGI(TAG, "Disconnected from the AP. Retrying...");
+        wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
+        ESP_LOGI(TAG, "Disconnected from the AP (reason: %d). Retrying with credentials: %s %s",
+                 disconn->reason, current_cfg.ssid, current_cfg.password);
+
+        event_manager_clear_bits(EVENT_BIT_WIFI_STATUS);
+        vTaskDelay(pdMS_TO_TICKS(1000));
         esp_wifi_connect();
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
@@ -74,7 +73,28 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
 esp_err_t wifi_manager_start(void)
 {
-    return esp_wifi_start();
+    esp_err_t err = esp_wifi_start();
+    if (err == ESP_OK)
+    {
+        esp_err_t pm_err = esp_wifi_set_ps(WIFI_PS_NONE);
+        if (pm_err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Failed to set WiFi power save mode: %s", esp_err_to_name(pm_err));
+        }
+        else
+        {
+            ESP_LOGI(TAG, "WiFi power save mode set to NONE (always active)");
+            vTaskDelay(pdMS_TO_TICKS(50));
+            wifi_ps_type_t ps_type;
+            esp_wifi_get_ps(&ps_type);
+            if (ps_type != WIFI_PS_NONE)
+            {
+                ESP_LOGW(TAG, "WiFi power save verification failed after start, retrying...");
+                esp_wifi_set_ps(WIFI_PS_NONE);
+            }
+        }
+    }
+    return err;
 }
 
 void wifi_manager_stop(void)
@@ -95,7 +115,7 @@ const char *wifi_manager_get_current_password(void)
 esp_err_t wifi_manager_load_config(void)
 {
     app_wifi_config_t cfg = {0};
-    esp_err_t err = nvs_read_wifi_credentials(cfg.ssid, sizeof(cfg.ssid), cfg.password, sizeof(cfg.password));
+    esp_err_t err = wifi_config_load(&cfg);
 
     if (err != ESP_OK)
     {
@@ -105,7 +125,6 @@ esp_err_t wifi_manager_load_config(void)
 
     current_cfg = cfg;
 
-    // Update WiFi configuration
     wifi_config_t wifi_config = {
         .sta = {
             .threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD,
@@ -181,7 +200,6 @@ esp_err_t wifi_manager_save_credentials(const char *ssid, const char *password)
     if (err != ESP_OK)
         return err;
 
-    // save ssid
     err = nvs_set_str(handle, "ssid", cfg.ssid);
     if (err != ESP_OK)
     {
@@ -240,6 +258,10 @@ void wifi_manager_init(void)
             .threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD,
             .sae_pwe_h2e = ESP_WIFI_SAE_MODE,
             .sae_h2e_identifier = EXAMPLE_H2E_IDENTIFIER,
+            .pmf_cfg = {
+                .capable = true,
+                .required = false},
+            .listen_interval = 3,
         },
     };
 
@@ -248,4 +270,29 @@ void wifi_manager_init(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+
+    esp_err_t pm_err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (pm_err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to set WiFi power save mode: %s", esp_err_to_name(pm_err));
+    }
+    else
+    {
+        ESP_LOGI(TAG, "WiFi power save mode set to NONE (always active)");
+        wifi_ps_type_t ps_type;
+        esp_wifi_get_ps(&ps_type);
+        if (ps_type != WIFI_PS_NONE)
+        {
+            ESP_LOGW(TAG, "WiFi power save was not set correctly, retrying...");
+            esp_wifi_set_ps(WIFI_PS_NONE);
+        }
+    }
+
+    wifi_ps_type_t ps_type;
+    esp_wifi_get_ps(&ps_type);
+    if (ps_type != WIFI_PS_NONE)
+    {
+        ESP_LOGW(TAG, "WiFi power save was not set correctly, retrying...");
+        esp_wifi_set_ps(WIFI_PS_NONE);
+    }
 }

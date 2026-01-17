@@ -6,10 +6,12 @@ idf_component_register(SRCS "main.c"
                            "ble/gap.c"
                            "ble/gatt_server.c"
                            "ble/gatt_svc.c"
-                           "ble/wifi_config_service.c"
-                           "ble/device_provisioning_service.c"
+                           "ble/provisioning_service.c"
+                           "ble/telemetry_service.c"
+                           "ble/command_service.c"
                            "ble/ble_manager.c"
                            "utils/nvs_utils.c"
+                           "utils/fs_utils.c"
                            
                            "mqtt/mqtt_manager.c"
                            
@@ -24,8 +26,6 @@ idf_component_register(SRCS "main.c"
                            "hardware/ph/ph_sensor_driver.c"
                            "hardware/temperature/temp_sensor_driver.c"
                            "hardware/hardware_manager.c"
-                           
-                           "data/aquarium_data.c"
-                           
-                    INCLUDE_DIRS "." "wifi" "ble" "utils" "hardware" "mqtt" "data"
-                    REQUIRES esp_wifi console nvs_flash driver bt mqtt esp_adc json)
+
+                    INCLUDE_DIRS "." "wifi" "ble" "utils" "hardware" "mqtt"
+                    REQUIRES esp_wifi console nvs_flash driver bt mqtt esp_adc json spiffs)

@@ -4,8 +4,9 @@
 #include "driver/gpio.h"
 #include <stdbool.h>
 
-void break_beam_init(gpio_num_t gpio);
+void break_beam_init(gpio_num_t gpio, gpio_num_t power_gpio);
 void break_beam_monitor(void *pvParameters);
-int break_beam_get_state(void); // Returns 0 if beam broken, 1 if intact
+void break_beam_power_on(void);
+void break_beam_power_off(void);
 
 #endif // BREAK_BEAM_H

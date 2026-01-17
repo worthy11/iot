@@ -6,11 +6,13 @@
 #include "sdkconfig.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include <time.h>
-#include "nvs.h"
-#include "nvs_flash.h"
+#include "utils/nvs_utils.h"
 
 #include "event_manager.h"
+#include "wifi/wifi_manager.h"
+#include "hardware_manager.h"
 #include "display_driver.h"
 #include "ssd1306.h"
 
@@ -38,26 +40,14 @@ static display_settings_t g_display_settings = {
     .display_contrast = 32,
     .display_sleep_time_min = 1};
 
+// Recent measurement data stored in display NVS namespace
+static float g_temperature = 0.0f;
+static float g_ph = 0.0f;
+static time_t g_last_feed_time = 0;
+
 static esp_err_t save_display_settings_to_nvs(void)
 {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = nvs_set_blob(handle, "settings", &g_display_settings, sizeof(display_settings_t));
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to save display settings: %s", esp_err_to_name(err));
-        nvs_close(handle);
-        return err;
-    }
-
-    err = nvs_commit(handle);
-    nvs_close(handle);
+    esp_err_t err = nvs_save_blob(NVS_NAMESPACE, "settings", &g_display_settings, sizeof(display_settings_t));
     if (err == ESP_OK)
     {
         ESP_LOGI(TAG, "Display settings saved to NVS");
@@ -67,21 +57,8 @@ static esp_err_t save_display_settings_to_nvs(void)
 
 static esp_err_t load_display_settings_from_nvs(void)
 {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
-        if (save_display_settings_to_nvs() == ESP_OK)
-        {
-            ESP_LOGI(TAG, "Default display settings saved to NVS");
-        }
-        return err;
-    }
-
-    size_t required_size = sizeof(display_settings_t);
-    err = nvs_get_blob(handle, "settings", &g_display_settings, &required_size);
-    nvs_close(handle);
+    size_t size = sizeof(display_settings_t);
+    esp_err_t err = nvs_load_blob(NVS_NAMESPACE, "settings", &g_display_settings, &size);
     if (err != ESP_OK)
     {
         ESP_LOGW(TAG, "Failed to load display settings: %s", esp_err_to_name(err));
@@ -94,6 +71,103 @@ static esp_err_t load_display_settings_from_nvs(void)
 
     ESP_LOGI(TAG, "Display settings loaded from NVS");
     return ESP_OK;
+}
+
+static esp_err_t save_measurement_data_to_nvs(void)
+{
+    esp_err_t err;
+
+    err = nvs_save_blob(NVS_NAMESPACE, "temperature", &g_temperature, sizeof(float));
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save temperature: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_save_blob(NVS_NAMESPACE, "ph", &g_ph, sizeof(float));
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save pH: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_save_blob(NVS_NAMESPACE, "last_feed_time", &g_last_feed_time, sizeof(time_t));
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save last_feed_time: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Measurement data saved to NVS");
+    return ESP_OK;
+}
+
+static esp_err_t load_measurement_data_from_nvs(void)
+{
+    esp_err_t err;
+    size_t size;
+
+    size = sizeof(float);
+    err = nvs_load_blob(NVS_NAMESPACE, "temperature", &g_temperature, &size);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to load temperature: %s", esp_err_to_name(err));
+        g_temperature = 0.0f;
+    }
+
+    size = sizeof(float);
+    err = nvs_load_blob(NVS_NAMESPACE, "ph", &g_ph, &size);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to load pH: %s", esp_err_to_name(err));
+        g_ph = 0.0f;
+    }
+
+    size = sizeof(time_t);
+    err = nvs_load_blob(NVS_NAMESPACE, "last_feed_time", &g_last_feed_time, &size);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to load last_feed_time: %s", esp_err_to_name(err));
+        g_last_feed_time = 0;
+    }
+
+    ESP_LOGI(TAG, "Measurement data loaded from NVS: temp=%.1f, ph=%.2f, last_feed=%ld",
+             g_temperature, g_ph, (long)g_last_feed_time);
+    return ESP_OK;
+}
+
+// Public functions to set measurement data
+void display_set_temperature(float temperature)
+{
+    g_temperature = temperature;
+    save_measurement_data_to_nvs();
+}
+
+void display_set_ph(float ph)
+{
+    g_ph = ph;
+    save_measurement_data_to_nvs();
+}
+
+void display_set_feed_time(time_t feed_time)
+{
+    g_last_feed_time = feed_time;
+    save_measurement_data_to_nvs();
+}
+
+float display_get_temperature(void)
+{
+    return g_temperature;
+}
+
+float display_get_ph(void)
+{
+    return g_ph;
+}
+
+time_t display_get_feed_time(void)
+{
+    return g_last_feed_time;
 }
 
 typedef enum
@@ -133,13 +207,15 @@ static void display_selection(void);
 static void display_actions(void);
 static void display_settings(void);
 static void display_config(void);
-static void display_config_mode(void);
-static void display_passkey(void);
-static void display_ph_measurement_confirmation(void);
-static void display_ph_measurement(void);
-static void display_temp_measurement(void);
-static void display_temp_result(float temp);
-static void display_ph_result(float ph);
+
+void display_passkey(int passkey);
+void display_pairing_mode(void);
+void display_feed_result(bool success);
+void display_temp_measurement(void);
+void display_temp_result(float temp);
+void display_ph_measurement_confirmation(void);
+void display_ph_measurement(void);
+void display_ph_result(float ph);
 
 static display_state_t transition_main_left(void);
 static display_state_t transition_main_right(void);
@@ -166,9 +242,9 @@ static void action_toggle_last_feed_display(void);
 static void action_toggle_next_feed_display(void);
 static void action_change_contrast(void);
 static void action_change_sleep_time(void);
-static void action_change_wifi(void);
-static void action_reset_wifi(void);
+static void action_clear_wifi(void);
 static void action_factory_settings(void);
+static void action_pairing_mode(void);
 
 static void reset_sleep_timer(void)
 {
@@ -181,16 +257,12 @@ static void reset_sleep_timer(void)
 
 static void sleep_timer_callback(TimerHandle_t xTimer)
 {
-    if (event_manager_get_bits() & EVENT_BIT_CONFIG_MODE)
-    {
-        reset_sleep_timer();
-        return;
-    }
-
     if (display_awake)
     {
         display_awake = false;
         oled_display_off();
+        event_manager_clear_bits(EVENT_BIT_DISPLAY_STATUS);
+        event_manager_activity_counter_decrement();
     }
 }
 
@@ -221,8 +293,6 @@ static const char *get_time_string(time_t time_val)
 
 static void display_main_page(void)
 {
-    aquarium_data_t data;
-    event_manager_get_aquarium_data(&data);
     uint8_t font_size = 1;
     uint8_t line_height = font_size * 8 + 2;
     uint8_t x_indent = 0;
@@ -236,7 +306,7 @@ static void display_main_page(void)
 
     if (g_display_settings.temperature_display_enabled)
     {
-        snprintf(line, sizeof(line), "Temp: %.1f C", data.temperature);
+        snprintf(line, sizeof(line), "Temp: %.1f C", g_temperature);
         oled_set_position(y_pos, x_indent);
         oled_draw_text(line, font_size, 0);
         y_pos += line_height;
@@ -244,7 +314,7 @@ static void display_main_page(void)
 
     if (g_display_settings.ph_display_enabled)
     {
-        snprintf(line, sizeof(line), "pH: %.2f", data.ph);
+        snprintf(line, sizeof(line), "pH: %.2f", g_ph);
         oled_set_position(y_pos, x_indent);
         oled_draw_text(line, font_size, 0);
         y_pos += line_height;
@@ -252,18 +322,14 @@ static void display_main_page(void)
 
     if (g_display_settings.last_feeding_display_enabled)
     {
-        snprintf(line, sizeof(line), "Fed: %s", get_time_string(data.last_feed_time));
+        snprintf(line, sizeof(line), "Fed: %s", get_time_string(g_last_feed_time));
         oled_set_position(y_pos, x_indent);
         oled_draw_text(line, font_size, 0);
         y_pos += line_height;
     }
 
-    if (g_display_settings.next_feeding_display_enabled)
-    {
-        snprintf(line, sizeof(line), "Due: %s", get_time_string(data.next_feed_time));
-        oled_set_position(y_pos, x_indent);
-        oled_draw_text(line, font_size, 0);
-    }
+    // Note: next_feed_time is not stored in display NVS, it's calculated from feeding interval
+    // If needed, it can be added later or retrieved from hardware_manager
 
     oled_update_display();
 }
@@ -280,7 +346,7 @@ static void display_selection(void)
     oled_set_position(0, 0);
     oled_draw_text(" <<<  MENU  >>> ", font_size, 0);
 
-    const char *menu_items[] = {"<< BACK", "Actions", "Display Options", "WiFi Config"};
+    const char *menu_items[] = {"<< BACK", "Actions", "Display Options", "Configuration"};
     const int menu_count = sizeof(menu_items) / sizeof(menu_items[0]);
 
     for (int i = 0; i < menu_count; i++)
@@ -443,9 +509,9 @@ static void display_config(void)
 
     oled_clear_display();
     oled_set_position(0, 0);
-    oled_draw_text("WiFi Config", font_size, 0);
+    oled_draw_text("Configuration", font_size, 0);
 
-    const char *menu_items[] = {"<< BACK", "Change WiFi", "Reset WiFi"};
+    const char *menu_items[] = {"<< BACK", "Clear WiFi", "Factory", "Pairing Mode"};
     const int menu_count = sizeof(menu_items) / sizeof(menu_items[0]);
 
     for (int i = 0; i < menu_count; i++)
@@ -471,36 +537,59 @@ static void display_config(void)
     oled_update_display();
 }
 
-static void display_config_mode(void)
+void display_passkey(int passkey)
 {
-    uint8_t font_size = 1;
-
-    oled_clear_display();
-    oled_set_position(0, 0);
-    oled_draw_text("CONFIG MODE", font_size, 0);
-
-    oled_update_display();
-}
-
-static void display_passkey(void)
-{
-    uint8_t font_size = 1;
-    uint8_t line_height = font_size * 8 + 2;
+    uint8_t font_size_small = 1;
+    uint8_t font_size_large = 2; // Larger font for passkey
+    uint8_t line_height_small = font_size_small * 8 + 2;
+    uint8_t line_height_large = font_size_large * 8 + 2;
     char passkey_str[16];
 
-    uint32_t passkey = event_manager_get_passkey();
     snprintf(passkey_str, sizeof(passkey_str), "%06lu", (unsigned long)passkey);
 
     oled_clear_display();
     oled_set_position(0, 0);
-    oled_draw_text("Pairing code:", font_size, 0);
-    oled_set_position(line_height, 0);
-    oled_draw_text(passkey_str, font_size, 0);
+    oled_draw_text("PAIRING", font_size_small, 0); // Header in normal font
+    oled_set_position(line_height_small, 0);
+    oled_draw_text("Code:", font_size_small, 0);
+    oled_set_position(line_height_small + line_height_large, 0);
+    oled_draw_text(passkey_str, font_size_large, 0); // Passkey in large font
 
     oled_update_display();
 }
 
-static void display_ph_measurement_confirmation(void)
+void display_pairing_mode(void)
+{
+    uint8_t font_size = 1;
+    uint8_t line_height = font_size * 8 + 2;
+
+    oled_clear_display();
+    oled_set_position(0, 0);
+    oled_draw_text("PAIRING MODE", font_size, 0);
+    oled_set_position(line_height, 0);
+    oled_draw_text("Waiting for", font_size, 0);
+    oled_set_position(line_height * 2, 0);
+    oled_draw_text("connection...", font_size, 0);
+
+    oled_update_display();
+}
+
+void display_feed_result(bool success)
+{
+    uint8_t font_size = 1;
+    uint8_t line_height = font_size * 8 + 2;
+
+    oled_clear_display();
+    oled_set_position(0, 0);
+    oled_draw_text("FEEDING", font_size, 0);
+    oled_set_position(line_height, 0);
+    oled_draw_text(success ? "SUCCESS" : "FAILED", font_size, 0);
+    oled_set_position(line_height * 2, 0);
+
+    oled_update_display();
+}
+
+void display_ph_measurement_confirmation(void)
 {
     uint8_t font_size = 1;
     uint8_t line_height = font_size * 8 + 2;
@@ -514,7 +603,7 @@ static void display_ph_measurement_confirmation(void)
     oled_update_display();
 }
 
-static void display_ph_measurement(void)
+void display_ph_measurement(void)
 {
     uint8_t font_size = 1;
     uint8_t line_height = font_size * 8 + 2;
@@ -528,7 +617,7 @@ static void display_ph_measurement(void)
     oled_update_display();
 }
 
-static void display_temp_measurement(void)
+void display_temp_measurement(void)
 {
     uint8_t font_size = 1;
     uint8_t line_height = font_size * 8 + 2;
@@ -542,7 +631,7 @@ static void display_temp_measurement(void)
     oled_update_display();
 }
 
-static void display_temp_result(float temp)
+void display_temp_result(float temp)
 {
     uint8_t font_size = 1;
     uint8_t line_height = font_size * 8 + 2;
@@ -558,7 +647,7 @@ static void display_temp_result(float temp)
     oled_update_display();
 }
 
-static void display_ph_result(float ph)
+void display_ph_result(float ph)
 {
     uint8_t font_size = 1;
     uint8_t line_height = font_size * 8 + 2;
@@ -740,7 +829,8 @@ static display_state_t transition_config_left(void)
 
 static display_state_t transition_config_right(void)
 {
-    if (sm.menu_index < 2)
+    // Menu items: "<< BACK", "Clear WiFi", "Factory", "Pairing Mode" (4 items, indices 0-3)
+    if (sm.menu_index < 3)
     {
         sm.menu_index++;
     }
@@ -752,13 +842,16 @@ static display_state_t transition_config_confirm(void)
     switch (sm.menu_index)
     {
     case 0:
-        sm.menu_index = 2;      // Return to config selection
+        sm.menu_index = 3;      // Return to config selection (Configuration is now index 3)
         return STATE_SELECTION; // BACK
     case 1:
-        action_change_wifi();
+        action_clear_wifi();
         return STATE_CONFIG;
     case 2:
-        action_reset_wifi();
+        action_factory_settings();
+        return STATE_CONFIG;
+    case 3:
+        action_pairing_mode();
         return STATE_CONFIG;
     default:
         return STATE_CONFIG;
@@ -855,19 +948,46 @@ static void action_change_sleep_time(void)
     ESP_LOGI(TAG, "Display sleep time set to %lu minutes", (unsigned long)g_display_settings.display_sleep_time_min);
 }
 
-static void action_change_wifi(void)
+static void action_clear_wifi(void)
 {
-    event_manager_set_bits(EVENT_BIT_CONFIG_MODE);
+    ESP_LOGI(TAG, "Clearing WiFi credentials");
+    wifi_manager_clear_credentials();
 }
 
-static void action_reset_wifi(void)
+static void action_pairing_mode(void)
 {
-    event_manager_set_bits(EVENT_BIT_WIFI_CLEARED);
+    EventBits_t bits = event_manager_get_bits();
+    if (bits & EVENT_BIT_PAIRING_MODE)
+    {
+        ESP_LOGI(TAG, "Turning off pairing mode");
+        event_manager_clear_bits(EVENT_BIT_PAIRING_MODE);
+        display_update();
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Turning on pairing mode");
+        event_manager_set_bits(EVENT_BIT_PAIRING_MODE);
+        display_pairing_mode();
+    }
 }
 
 static void action_factory_settings(void)
 {
     ESP_LOGI(TAG, "Factory Settings: Resetting to defaults");
+
+    // Clear WiFi credentials
+    wifi_manager_clear_credentials();
+
+// Clear all intervals and last read times from event_manager
+#define EVENT_MANAGER_NVS_NAMESPACE "event_mgr"
+    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "temp_int", NULL, 0);
+    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "feed_int", NULL, 0);
+    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "publish_int", NULL, 0);
+    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_feed", NULL, 0);
+    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_temp", NULL, 0);
+    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_publish", NULL, 0);
+
+    // Reset display settings to defaults
     g_display_settings.temperature_display_enabled = true;
     g_display_settings.ph_display_enabled = true;
     g_display_settings.last_feeding_display_enabled = true;
@@ -899,23 +1019,25 @@ static const struct
     [STATE_ACTIONS] = {.display_func = display_actions, .on_left = transition_actions_left, .on_right = transition_actions_right, .on_confirm = transition_actions_confirm},
     [STATE_SETTINGS] = {.display_func = display_settings, .on_left = transition_settings_left, .on_right = transition_settings_right, .on_confirm = transition_settings_confirm},
     [STATE_CONFIG] = {.display_func = display_config, .on_left = transition_config_left, .on_right = transition_config_right, .on_confirm = transition_config_confirm},
-    [STATE_CONFIG_MODE] = {.display_func = display_config_mode, .on_left = NULL, .on_right = NULL, .on_confirm = NULL},
-    [STATE_PASSKEY] = {.display_func = display_passkey, .on_left = NULL, .on_right = NULL, .on_confirm = NULL},
 };
 
 void display_wake(void)
 {
     if (!display_awake)
     {
+        display_update();
         display_awake = true;
         oled_display_on();
+        event_manager_set_bits(EVENT_BIT_DISPLAY_STATUS);
+        event_manager_activity_counter_increment();
     }
     reset_sleep_timer();
 }
 
 void display_next(void)
 {
-    if (sm.state >= STATE_COUNT || (event_manager_get_bits() & EVENT_BIT_CONFIG_MODE))
+    EventBits_t bits = event_manager_get_bits();
+    if (sm.state >= STATE_COUNT || (bits & EVENT_BIT_PASSKEY_DISPLAY) || (bits & EVENT_BIT_PAIRING_MODE))
     {
         return;
     }
@@ -930,7 +1052,8 @@ void display_next(void)
 
 void display_prev(void)
 {
-    if (sm.state >= STATE_COUNT || (event_manager_get_bits() & EVENT_BIT_CONFIG_MODE))
+    EventBits_t bits = event_manager_get_bits();
+    if (sm.state >= STATE_COUNT || (bits & EVENT_BIT_PASSKEY_DISPLAY) || (bits & EVENT_BIT_PAIRING_MODE))
     {
         return;
     }
@@ -951,9 +1074,10 @@ void display_confirm(void)
     }
 
     EventBits_t bits = event_manager_get_bits();
-    if (bits & EVENT_BIT_CONFIG_MODE)
+    if (bits & EVENT_BIT_PAIRING_MODE)
     {
-        event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
+        // Turn off pairing mode when confirm is pressed
+        event_manager_clear_bits(EVENT_BIT_PAIRING_MODE);
         display_update();
         return;
     }
@@ -971,92 +1095,92 @@ void display_confirm(void)
     }
 }
 
+void display_event(const char *event, float value)
+{
+    if (event == NULL)
+    {
+        return;
+    }
+
+    EventBits_t bits = event_manager_get_bits();
+    bool pairing_mode_active = (bits & EVENT_BIT_PAIRING_MODE) != 0;
+    bool passkey_display_active = (bits & EVENT_BIT_PASSKEY_DISPLAY) != 0;
+
+    // If pairing mode is active, only allow passkey display
+    if (pairing_mode_active && strcmp(event, "passkey") != 0)
+    {
+        return;
+    }
+
+    // If passkey display is active, only allow passkey display (block other events)
+    if (passkey_display_active && strcmp(event, "passkey") != 0 && strcmp(event, "pairing") != 0)
+    {
+        return;
+    }
+
+    if (!display_awake)
+    {
+        display_wake();
+    }
+
+    if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        if (strcmp(event, "passkey") == 0)
+        {
+            uint32_t passkey = event_manager_get_passkey();
+            display_passkey((int)passkey);
+        }
+        else if (strcmp(event, "pairing") == 0)
+        {
+            display_pairing_mode();
+        }
+        else if (strcmp(event, "temperature") == 0)
+        {
+            display_temp_result(value);
+        }
+        else if (strcmp(event, "ph") == 0)
+        {
+            display_ph_result(value);
+        }
+        else if (strcmp(event, "feed_status") == 0)
+        {
+            // value: 1.0 = true, 0.0 = false, NAN = false
+            bool success = !isnan(value) && value != 0.0f;
+            display_feed_result(success);
+        }
+        else if (strcmp(event, "temp_measurement_screen") == 0)
+        {
+            display_temp_measurement();
+        }
+        else if (strcmp(event, "ph_measurement_screen") == 0)
+        {
+            display_ph_measurement();
+        }
+        else if (strcmp(event, "ph_confirmation_screen") == 0)
+        {
+            display_ph_measurement_confirmation();
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Unknown display event: %s", event);
+        }
+
+        xSemaphoreGive(display_mutex);
+    }
+}
+
 void display_update(void)
 {
-    if (!display_awake || (event_manager_get_bits() & EVENT_BIT_CONFIG_MODE))
+    EventBits_t bits = event_manager_get_bits();
+
+    if ((bits & EVENT_BIT_PASSKEY_DISPLAY) || (bits & EVENT_BIT_PAIRING_MODE))
         return;
 
     if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
     {
-        aquarium_data_t data;
-        event_manager_get_aquarium_data(&data);
-
         if (sm.state < STATE_COUNT && state_table[sm.state].display_func != NULL)
         {
             state_table[sm.state].display_func();
-        }
-
-        xSemaphoreGive(display_mutex);
-    }
-}
-
-void display_interrupt(void)
-{
-    if (!display_awake)
-    {
-        display_wake();
-    }
-
-    if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
-    {
-        EventBits_t bits = event_manager_get_bits();
-        bool config_mode = (bits & EVENT_BIT_CONFIG_MODE) != 0;
-        bool passkey_display = (bits & EVENT_BIT_PASSKEY_DISPLAY) != 0;
-        bool measure_temp = (bits & EVENT_BIT_TEMP_SCHEDULED) != 0;
-        bool measure_ph = (bits & EVENT_BIT_PH_SCHEDULED) != 0;
-        bool ph_confirmed = (bits & EVENT_BIT_PH_CONFIRMED) != 0;
-
-        if (passkey_display)
-        {
-            display_passkey();
-        }
-        else if (config_mode)
-        {
-            display_config_mode();
-        }
-        else if (measure_ph)
-        {
-            if (ph_confirmed)
-            {
-                display_ph_measurement();
-            }
-            else
-            {
-                display_ph_measurement_confirmation();
-            }
-        }
-        else if (measure_temp)
-        {
-            display_temp_measurement();
-        }
-        else
-        {
-            if (sm.state < STATE_COUNT && state_table[sm.state].display_func != NULL)
-            {
-                state_table[sm.state].display_func();
-            }
-        }
-
-        xSemaphoreGive(display_mutex);
-    }
-}
-
-void display_interrupt_with_value(float value, bool is_temp)
-{
-    if (!display_awake)
-    {
-        display_wake();
-    }
-
-    if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
-    {
-        if (is_temp)
-        {
-            display_temp_result(value);
-        }
-        else
-        {
-            display_ph_result(value);
         }
 
         xSemaphoreGive(display_mutex);
@@ -1100,6 +1224,7 @@ void display_init(gpio_num_t scl_gpio, gpio_num_t sda_gpio)
     }
 
     load_display_settings_from_nvs();
+    load_measurement_data_from_nvs();
     oled_set_contrast(g_display_settings.display_contrast);
 
     uint32_t sleep_time_min = g_display_settings.display_sleep_time_min;

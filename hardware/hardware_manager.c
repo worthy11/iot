@@ -4,8 +4,10 @@
 #include "freertos/timers.h"
 #include "freertos/event_groups.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include <time.h>
 #include <math.h>
+#include <string.h>
 
 #include "hardware_manager.h"
 #include "event_manager.h"
@@ -13,34 +15,19 @@
 #include "feeder/motor_driver.h"
 #include "feeder/beam_driver.h"
 #include "display/display_driver.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+
+#define NUM_READINGS 5
+#define TEMP_INTERVAL_MS 5 * 1000
+#define PH_INTERVAL_MS 2 * 1000
+#define MAX_FEED_ATTEMPTS 5
 
 static const char *TAG = "hardware_manager";
-TaskHandle_t led_task_handle = NULL;
 
-static EventGroupHandle_t s_hardware_event_group = NULL;
-static TimerHandle_t temp_reading_timer = NULL;
-static TimerHandle_t feeding_timer = NULL;
-
-static void temp_reading_timer_callback(TimerHandle_t xTimer)
+void hardware_manager_display_event(const char *event, float value)
 {
-    ESP_LOGI(TAG, "Temperature reading timer expired");
-    event_manager_set_bits(EVENT_BIT_TEMP_SCHEDULED);
-}
-
-static void feeding_timer_callback(TimerHandle_t xTimer)
-{
-    ESP_LOGI(TAG, "Feeding timer expired");
-    event_manager_set_bits(EVENT_BIT_FEED_SCHEDULED);
-}
-
-void hardware_manager_display_interrupt(void)
-{
-    display_interrupt();
-}
-
-void hardware_manager_display_interrupt_with_value(float value, bool is_temp)
-{
-    display_interrupt_with_value(value, is_temp);
+    display_event(event, value);
 }
 
 void hardware_manager_display_update(void)
@@ -68,12 +55,22 @@ void hardware_manager_display_confirm(void)
     display_confirm();
 }
 
+void hardware_manager_set_temp_reading_interval(uint32_t interval_seconds)
+{
+    event_manager_set_temp_reading_interval(interval_seconds);
+}
+
+void hardware_manager_set_feeding_interval(uint32_t interval_seconds)
+{
+    event_manager_set_feeding_interval(interval_seconds);
+}
+
 float hardware_manager_measure_temp(void)
 {
     float temp_sum = 0.0f;
     int valid_readings = 0;
 
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < NUM_READINGS; i++)
     {
         float temp = temp_sensor_read();
         if (!isnan(temp))
@@ -82,24 +79,37 @@ float hardware_manager_measure_temp(void)
             if (temp > 40.0f || temp < 10.0f)
             {
                 ESP_LOGW(TAG, "Temperature reading %d out of range (%.2f°C)", i + 1, temp);
-                continue;
             }
-            temp_sum += temp;
-            valid_readings++;
+            else
+            {
+                temp_sum += temp;
+                valid_readings++;
+            }
         }
         else
         {
             ESP_LOGW(TAG, "Temperature reading %d failed (NaN)", i + 1);
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        if (i < NUM_READINGS - 1)
+        {
+            esp_sleep_enable_timer_wakeup(TEMP_INTERVAL_MS * 1000);
+            ESP_LOGI(TAG, "Entering light sleep for %d milliseconds", TEMP_INTERVAL_MS);
+            esp_light_sleep_start();
+            ESP_LOGI(TAG, "Exited light sleep");
+        }
     }
 
     if (valid_readings > 0)
     {
-        return temp_sum / valid_readings;
+        float temp = temp_sum / valid_readings;
+        display_set_temperature(temp);
+        hardware_manager_display_event("temperature", temp);
+        return temp;
     }
     else
     {
+        hardware_manager_display_event("temperature", NAN);
         ESP_LOGE(TAG, "All temperature readings failed");
         return NAN;
     }
@@ -113,7 +123,7 @@ float hardware_manager_measure_ph(void)
     float ph_sum = 0.0f;
     int valid_readings = 0;
 
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < NUM_READINGS; i++)
     {
         float ph_value = ph_sensor_read_ph();
         if (!isnan(ph_value))
@@ -126,108 +136,97 @@ float hardware_manager_measure_ph(void)
         {
             ESP_LOGW(TAG, "pH reading %d failed (NaN)", i + 1);
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        if (i < NUM_READINGS - 1)
+        {
+            esp_sleep_enable_timer_wakeup(PH_INTERVAL_MS * 1000);
+            ESP_LOGI(TAG, "Entering light sleep for %d milliseconds", PH_INTERVAL_MS);
+            esp_light_sleep_start();
+            ESP_LOGI(TAG, "Exited light sleep");
+        }
     }
 
     gpio_set_level(GPIO_PH_POWER, 0);
 
     if (valid_readings > 0)
     {
-        return ph_sum / valid_readings;
+        float ph = ph_sum / valid_readings;
+        display_set_ph(ph);
+        hardware_manager_display_event("ph", ph);
+        return ph;
     }
     else
     {
         ESP_LOGE(TAG, "All pH readings failed");
+        hardware_manager_display_event("ph", NAN);
         return NAN;
     }
 }
 
-void hardware_manager_set_temp_reading_interval(uint32_t interval_seconds)
+bool hardware_manager_feed(void)
 {
-    if (temp_reading_timer == NULL)
-    {
-        ESP_LOGE(TAG, "Temperature reading timer not initialized");
-        return;
-    }
+    // Power on the break beam sensor before starting the task
+    break_beam_power_on();
 
-    if (interval_seconds == 0)
-    {
-        xTimerStop(temp_reading_timer, portMAX_DELAY);
-        ESP_LOGI(TAG, "Temperature reading timer stopped");
-    }
-    else
-    {
-        TickType_t period_ticks = pdMS_TO_TICKS(interval_seconds * 1000);
-        xTimerChangePeriod(temp_reading_timer, period_ticks, portMAX_DELAY);
-        xTimerStart(temp_reading_timer, portMAX_DELAY);
-        ESP_LOGI(TAG, "Temperature reading timer set to %lu seconds (auto-reload)", interval_seconds);
-    }
-}
-
-void hardware_manager_set_feeding_interval(uint32_t interval_seconds)
-{
-    if (feeding_timer == NULL)
-    {
-        ESP_LOGE(TAG, "Feeding timer not initialized");
-        return;
-    }
-
-    if (interval_seconds == 0)
-    {
-        xTimerStop(feeding_timer, portMAX_DELAY);
-        ESP_LOGI(TAG, "Feeding timer stopped");
-    }
-    else
-    {
-        TickType_t period_ticks = pdMS_TO_TICKS(interval_seconds * 1000);
-        xTimerChangePeriod(feeding_timer, period_ticks, portMAX_DELAY);
-        xTimerStart(feeding_timer, portMAX_DELAY);
-        ESP_LOGI(TAG, "Feeding timer set to %lu seconds (auto-reload)", interval_seconds);
-    }
-}
-
-void hardware_manager_motor_rotate_portion(bool direction)
-{
-    motor_rotate_portion(direction);
-}
-
-void hardware_manager_start_beam_monitor(TaskHandle_t *task_handle)
-{
-    if (task_handle == NULL)
-    {
-        ESP_LOGE(TAG, "Invalid task handle pointer");
-        return;
-    }
-
+    TaskHandle_t beam_task_handle = NULL;
     xTaskCreate(
         break_beam_monitor,
         "beam_monitor",
         2048,
-        task_handle, // Pass task handle pointer so beam_monitor can set it to NULL when beam breaks
+        &beam_task_handle,
         5,
-        task_handle);
+        &beam_task_handle);
 
-    ESP_LOGI(TAG, "Beam monitor task started, handle: 0x%p", *task_handle);
-}
-
-void hardware_manager_stop_beam_monitor(TaskHandle_t task_handle)
-{
-    if (task_handle != NULL)
+    bool feed_successful = false;
+    for (int attempt = 1; attempt <= MAX_FEED_ATTEMPTS; attempt++)
     {
-        vTaskDelete(task_handle);
-        ESP_LOGI(TAG, "Beam monitor task stopped");
+        if (attempt > 1)
+        {
+            motor_rotate_portion(false);
+            vTaskDelay(pdMS_TO_TICKS(GPIO_MOTOR_RETRY_DELAY_MS));
+        }
+
+        motor_rotate_portion(true);
+        vTaskDelay(pdMS_TO_TICKS(GPIO_MOTOR_RETRY_DELAY_MS));
+
+        if (beam_task_handle == NULL)
+        {
+            feed_successful = true;
+            break;
+        }
     }
+
+    if (beam_task_handle != NULL)
+    {
+        // Power off the break beam sensor before deleting the task
+        break_beam_power_off();
+        vTaskDelete(beam_task_handle);
+        beam_task_handle = NULL;
+    }
+
+    if (feed_successful)
+    {
+        ESP_LOGI(TAG, "Feed successful");
+        time_t feed_time = time(NULL);
+        display_set_feed_time(feed_time);
+        hardware_manager_display_event("feed_status", 1.0f);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Feed failed after %d attempts", MAX_FEED_ATTEMPTS);
+        hardware_manager_display_event("feed_status", 0.0f);
+    }
+
+    return feed_successful;
 }
 
 void hardware_manager_init(void)
 {
-    s_hardware_event_group = xEventGroupCreate();
-
     display_init(GPIO_OLED_SCL, GPIO_OLED_SDA);
     left_button_init(GPIO_LEFT_BUTTON);
     right_button_init(GPIO_RIGHT_BUTTON);
     confirm_button_init(GPIO_CONFIRM_BUTTON);
-    break_beam_init(GPIO_BREAK_BEAM);
+    break_beam_init(GPIO_BREAK_BEAM, GPIO_BREAK_BEAM_POWER);
     motor_driver_init(GPIO_MOTOR_IN1, GPIO_MOTOR_IN2, GPIO_MOTOR_IN3, GPIO_MOTOR_IN4);
     ph_sensor_init(GPIO_PH_OUTPUT, GPIO_PH_TEMP_COMP);
     temp_sensor_init(GPIO_TEMP_SENSOR);
@@ -241,29 +240,6 @@ void hardware_manager_init(void)
     };
     gpio_config(&ph_power_cfg);
     gpio_set_level(GPIO_PH_POWER, 0);
-
-    temp_reading_timer = xTimerCreate(
-        "temp_reading_timer",
-        pdMS_TO_TICKS(1000), // Initial period (will be changed by setter)
-        pdTRUE,              // Auto-reload: timer will reset itself when it expires
-        NULL,                // Timer ID (not used)
-        temp_reading_timer_callback);
-
-    feeding_timer = xTimerCreate(
-        "feeding_timer",
-        pdMS_TO_TICKS(1000), // Initial period (will be changed by setter)
-        pdTRUE,              // Auto-reload: timer will reset itself when it expires
-        NULL,                // Timer ID (not used)
-        feeding_timer_callback);
-
-    if (temp_reading_timer == NULL || feeding_timer == NULL)
-    {
-        ESP_LOGE(TAG, "Failed to create timers");
-    }
-    else
-    {
-        ESP_LOGI(TAG, "Timers created successfully");
-    }
 
     ESP_LOGI(TAG, "Hardware manager initialized");
 }

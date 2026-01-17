@@ -5,21 +5,38 @@
 #include <math.h>
 
 #include "ble/ble_manager.h"
-#include "ble/device_provisioning_service.h"
 #include "wifi/wifi_manager.h"
 #include "mqtt/mqtt_manager.h"
 #include "hardware/hardware_manager.h"
-#include "data/aquarium_data.h"
 #include "utils/nvs_utils.h"
-#include "esp_mac.h"
+#include "esp_sleep.h"
+#include "freertos/semphr.h"
 
-#define GATT_SERVER_TIMEOUT_MS (5 * 60 * 1000)
+#define GATT_SERVER_TIMEOUT_MS (10 * 1000)
+#define PAIRING_TIMEOUT_MS (5 * 60 * 1000)
+#define ADVERTISING_INTERVAL_MS (60 * 1000)
 #define PH_CONFIRMATION_TIMEOUT_MS (30 * 1000)
-#define CONNECTION_TIMEOUT_MS (30 * 1000)
+#define CONNECTION_TIMEOUT_MS (60 * 1000)
+#define EVENT_MANAGER_NVS_NAMESPACE "event_mgr"
 
 static const char *TAG = "event_manager";
 static EventGroupHandle_t s_event_group = NULL;
-static const int MAX_FEED_ATTEMPTS = 5;
+
+static TimerHandle_t ble_timer = NULL;
+static TimerHandle_t publish_timer = NULL;
+static TimerHandle_t temp_reading_timer = NULL;
+static TimerHandle_t feeding_timer = NULL;
+
+static uint32_t publish_interval_sec = 0;
+static uint32_t g_temp_reading_interval_sec = 0;
+static uint32_t g_feeding_interval_sec = 0;
+
+static time_t g_last_publish_time = 0;
+static time_t g_last_feed_time = 0;
+static time_t g_last_temp_measurement_time = 0;
+
+static int32_t activity_counter = 0;
+static SemaphoreHandle_t activity_counter_mutex = NULL;
 
 typedef struct
 {
@@ -83,22 +100,9 @@ EventBits_t event_manager_wait_bits(EventBits_t bits_to_wait_for,
 
 void event_manager_register_notification(TaskHandle_t task_handle, EventBits_t bits)
 {
-    if (num_notifications < MAX_NOTIFICATIONS)
-    {
-        notification_registrations[num_notifications].task_handle = task_handle;
-        notification_registrations[num_notifications].event_bits = bits;
-        num_notifications++;
-        ESP_LOGI(TAG, "Registered notification for task 0x%p, events: 0x%lx", task_handle, bits);
-    }
-    else
-    {
-        ESP_LOGW(TAG, "Maximum number of notification registrations reached");
-    }
-}
-
-void event_manager_get_aquarium_data(aquarium_data_t *data)
-{
-    aquarium_data_get(data);
+    notification_registrations[num_notifications].task_handle = task_handle;
+    notification_registrations[num_notifications].event_bits = bits;
+    num_notifications++;
 }
 
 uint32_t event_manager_get_passkey(void)
@@ -106,78 +110,732 @@ uint32_t event_manager_get_passkey(void)
     return ble_manager_get_passkey();
 }
 
+static void publish_timer_callback(TimerHandle_t xTimer)
+{
+    event_manager_set_bits(EVENT_BIT_PUBLISH_SCHEDULED);
+}
+
+static void ble_connection_timer_callback(TimerHandle_t xTimer)
+{
+    event_manager_set_bits(EVENT_BIT_BLE_ADVERTISING);
+}
+
+static void temp_reading_timer_callback(TimerHandle_t xTimer)
+{
+    event_manager_set_bits(EVENT_BIT_TEMP_SCHEDULED);
+}
+
+static void feeding_timer_callback(TimerHandle_t xTimer)
+{
+    event_manager_set_bits(EVENT_BIT_FEED_SCHEDULED);
+}
+
+static void load_intervals(void)
+{
+    // Load intervals and last times from NVS
+    esp_err_t err;
+    size_t size;
+
+    size = sizeof(uint32_t);
+    err = nvs_load_blob(EVENT_MANAGER_NVS_NAMESPACE, "temp_int", &g_temp_reading_interval_sec, &size);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to load temp_interval: %s", esp_err_to_name(err));
+        g_temp_reading_interval_sec = 0;
+    }
+
+    size = sizeof(uint32_t);
+    err = nvs_load_blob(EVENT_MANAGER_NVS_NAMESPACE, "feed_int", &g_feeding_interval_sec, &size);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to load feeding_interval: %s", esp_err_to_name(err));
+        g_feeding_interval_sec = 0;
+    }
+
+    size = sizeof(time_t);
+    err = nvs_load_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_feed", &g_last_feed_time, &size);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to load last_feed_time: %s", esp_err_to_name(err));
+        g_last_feed_time = 0;
+    }
+
+    size = sizeof(time_t);
+    err = nvs_load_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_temp", &g_last_temp_measurement_time, &size);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to load last_temp_time: %s", esp_err_to_name(err));
+        g_last_temp_measurement_time = 0;
+    }
+
+    size = sizeof(uint32_t);
+    err = nvs_load_blob(EVENT_MANAGER_NVS_NAMESPACE, "publish_int", &publish_interval_sec, &size);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to load publish_interval: %s", esp_err_to_name(err));
+        publish_interval_sec = 0;
+    }
+
+    size = sizeof(time_t);
+    err = nvs_load_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_publish", &g_last_publish_time, &size);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to load last_publish_time: %s", esp_err_to_name(err));
+        g_last_publish_time = 0;
+    }
+
+    ESP_LOGI(TAG, "Intervals and times loaded from NVS: temp_interval=%lu, feed_interval=%lu, publish_interval=%lu, last_feed=%ld, last_temp=%ld, last_publish=%ld",
+             (unsigned long)g_temp_reading_interval_sec, (unsigned long)g_feeding_interval_sec,
+             (unsigned long)publish_interval_sec, (long)g_last_feed_time,
+             (long)g_last_temp_measurement_time, (long)g_last_publish_time);
+
+    time_t current_time = time(NULL);
+
+    // Set temperature reading timer based on remaining time from last measurement
+    if (g_temp_reading_interval_sec > 0 && temp_reading_timer != NULL)
+    {
+        if (g_last_temp_measurement_time > 0 && current_time > 1000000000) // Valid system time
+        {
+            time_t elapsed = current_time - g_last_temp_measurement_time;
+            if (elapsed < (time_t)g_temp_reading_interval_sec)
+            {
+                // Calculate remaining time until next reading
+                uint32_t remaining_sec = g_temp_reading_interval_sec - (uint32_t)elapsed;
+                ESP_LOGI(TAG, "Setting temp timer to remaining time: %lu seconds", (unsigned long)remaining_sec);
+                xTimerChangePeriod(temp_reading_timer, pdMS_TO_TICKS(remaining_sec * 1000), 0);
+                xTimerStart(temp_reading_timer, 0);
+            }
+            else
+            {
+                // Interval has already passed, trigger immediately
+                ESP_LOGI(TAG, "Temp interval already passed, triggering immediately");
+                TickType_t period_ticks = pdMS_TO_TICKS(g_temp_reading_interval_sec * 1000);
+                xTimerChangePeriod(temp_reading_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(temp_reading_timer, portMAX_DELAY);
+                event_manager_set_bits(EVENT_BIT_TEMP_SCHEDULED);
+            }
+        }
+        else
+        {
+            // No previous measurement or invalid time, set full interval
+            TickType_t period_ticks = pdMS_TO_TICKS(g_temp_reading_interval_sec * 1000);
+            xTimerChangePeriod(temp_reading_timer, period_ticks, portMAX_DELAY);
+            xTimerStart(temp_reading_timer, portMAX_DELAY);
+        }
+    }
+
+    // Set feeding timer based on remaining time from last feed
+    if (g_feeding_interval_sec > 0 && feeding_timer != NULL)
+    {
+        if (g_last_feed_time > 0 && current_time > 1000000000) // Valid system time
+        {
+            time_t elapsed = current_time - g_last_feed_time;
+            if (elapsed < (time_t)g_feeding_interval_sec)
+            {
+                // Calculate remaining time until next feed
+                uint32_t remaining_sec = g_feeding_interval_sec - (uint32_t)elapsed;
+                ESP_LOGI(TAG, "Setting feed timer to remaining time: %lu seconds", (unsigned long)remaining_sec);
+                xTimerChangePeriod(feeding_timer, pdMS_TO_TICKS(remaining_sec * 1000), 0);
+                xTimerStart(feeding_timer, 0);
+            }
+            else
+            {
+                // Interval has already passed, trigger immediately
+                ESP_LOGI(TAG, "Feed interval already passed, triggering immediately");
+                TickType_t period_ticks = pdMS_TO_TICKS(g_feeding_interval_sec * 1000);
+                xTimerChangePeriod(feeding_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(feeding_timer, portMAX_DELAY);
+                event_manager_set_bits(EVENT_BIT_FEED_SCHEDULED);
+            }
+        }
+        else
+        {
+            // No previous feed or invalid time, set full interval
+            TickType_t period_ticks = pdMS_TO_TICKS(g_feeding_interval_sec * 1000);
+            xTimerChangePeriod(feeding_timer, period_ticks, portMAX_DELAY);
+            xTimerStart(feeding_timer, portMAX_DELAY);
+        }
+    }
+
+    // Set publish timer based on remaining time from last publish
+    if (publish_interval_sec > 0 && publish_timer != NULL)
+    {
+        if (g_last_publish_time > 0 && current_time > 1000000000) // Valid system time
+        {
+            time_t elapsed = current_time - g_last_publish_time;
+            if (elapsed < (time_t)publish_interval_sec)
+            {
+                // Calculate remaining time until next publish
+                uint32_t remaining_sec = publish_interval_sec - (uint32_t)elapsed;
+                ESP_LOGI(TAG, "Setting publish timer to remaining time: %lu seconds", (unsigned long)remaining_sec);
+                xTimerChangePeriod(publish_timer, pdMS_TO_TICKS(remaining_sec * 1000), 0);
+                xTimerStart(publish_timer, 0);
+            }
+            else
+            {
+                // Interval has already passed, trigger immediately
+                ESP_LOGI(TAG, "Publish interval already passed, triggering immediately");
+                TickType_t period_ticks = pdMS_TO_TICKS(publish_interval_sec * 1000);
+                xTimerChangePeriod(publish_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(publish_timer, portMAX_DELAY);
+                event_manager_set_bits(EVENT_BIT_PUBLISH_SCHEDULED);
+            }
+        }
+        else
+        {
+            // No previous publish or invalid time, set full interval
+            TickType_t period_ticks = pdMS_TO_TICKS(publish_interval_sec * 1000);
+            xTimerChangePeriod(publish_timer, period_ticks, portMAX_DELAY);
+            xTimerStart(publish_timer, portMAX_DELAY);
+        }
+    }
+}
+
+void event_manager_set_feeding_interval(uint32_t feed_interval_seconds)
+{
+    g_feeding_interval_sec = feed_interval_seconds;
+    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "feed_int", &g_feeding_interval_sec, sizeof(uint32_t));
+
+    if (feed_interval_seconds == 0)
+    {
+        xTimerStop(feeding_timer, portMAX_DELAY);
+        ESP_LOGI(TAG, "Feeding timer stopped");
+    }
+    else
+    {
+        TickType_t period_ticks = pdMS_TO_TICKS(feed_interval_seconds * 1000);
+        xTimerChangePeriod(feeding_timer, period_ticks, portMAX_DELAY);
+        xTimerStart(feeding_timer, portMAX_DELAY);
+        ESP_LOGI(TAG, "Feeding timer set to %lu seconds (auto-reload)", (unsigned long)feed_interval_seconds);
+    }
+}
+
+void event_manager_set_temp_reading_interval(uint32_t temp_interval_seconds)
+{
+    g_temp_reading_interval_sec = temp_interval_seconds;
+    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "temp_int", &g_temp_reading_interval_sec, sizeof(uint32_t));
+
+    if (temp_reading_timer == NULL)
+    {
+        ESP_LOGE(TAG, "Temperature reading timer not initialized");
+        return;
+    }
+
+    if (temp_interval_seconds == 0)
+    {
+        xTimerStop(temp_reading_timer, portMAX_DELAY);
+        ESP_LOGI(TAG, "Temperature reading timer stopped");
+    }
+    else
+    {
+        TickType_t period_ticks = pdMS_TO_TICKS(temp_interval_seconds * 1000);
+        xTimerChangePeriod(temp_reading_timer, period_ticks, portMAX_DELAY);
+        xTimerStart(temp_reading_timer, portMAX_DELAY);
+        ESP_LOGI(TAG, "Temperature reading timer set to %lu seconds (auto-reload)", (unsigned long)temp_interval_seconds);
+    }
+}
+
+void event_manager_set_publish_interval(int publish_frequency)
+{
+    publish_interval_sec = publish_frequency >= 0 ? (uint32_t)publish_frequency : 0;
+    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "publish_int", &publish_interval_sec, sizeof(uint32_t));
+
+    if (publish_timer == NULL)
+    {
+        ESP_LOGE(TAG, "Publish timer not initialized");
+        return;
+    }
+
+    if (publish_interval_sec == 0)
+    {
+        xTimerStop(publish_timer, portMAX_DELAY);
+        ESP_LOGI(TAG, "Publish timer disabled (never)");
+    }
+    else
+    {
+        TickType_t period_ticks = pdMS_TO_TICKS(publish_interval_sec * 1000);
+        xTimerChangePeriod(publish_timer, period_ticks, portMAX_DELAY);
+        xTimerStart(publish_timer, portMAX_DELAY);
+        ESP_LOGI(TAG, "Publish timer set to %lu seconds (auto-reload)", (unsigned long)publish_interval_sec);
+    }
+}
+
+uint32_t event_manager_get_feeding_interval(void)
+{
+    return g_feeding_interval_sec;
+}
+
+uint32_t event_manager_get_temp_reading_interval(void)
+{
+    return g_temp_reading_interval_sec;
+}
+
+uint32_t event_manager_get_publish_interval(void)
+{
+    return publish_interval_sec;
+}
+
+uint32_t event_manager_get_temp_timer_remaining_sec(void)
+{
+    if (temp_reading_timer == NULL || g_temp_reading_interval_sec == 0)
+    {
+        return 0;
+    }
+
+    time_t current_time = time(NULL);
+    if (current_time < 1000000000)
+    {
+        // Invalid system time, fall back to timer
+        if (xTimerIsTimerActive(temp_reading_timer) == pdFALSE)
+        {
+            return 0;
+        }
+
+        TickType_t expiry_time = xTimerGetExpiryTime(temp_reading_timer);
+        TickType_t current_ticks = xTaskGetTickCount();
+
+        TickType_t remaining_ticks;
+        if (expiry_time > current_ticks)
+        {
+            remaining_ticks = expiry_time - current_ticks;
+        }
+        else
+        {
+            return 0;
+        }
+
+        uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+        return remaining_ms / 1000;
+    }
+
+    // Calculate based on last measurement time
+    if (g_last_temp_measurement_time > 0)
+    {
+        time_t elapsed = current_time - g_last_temp_measurement_time;
+        if (elapsed < (time_t)g_temp_reading_interval_sec)
+        {
+            return g_temp_reading_interval_sec - (uint32_t)elapsed;
+        }
+        else
+        {
+            // Interval has already passed
+            return 0;
+        }
+    }
+
+    // No last measurement time, check timer
+    if (xTimerIsTimerActive(temp_reading_timer) == pdFALSE)
+    {
+        return 0;
+    }
+
+    TickType_t expiry_time = xTimerGetExpiryTime(temp_reading_timer);
+    TickType_t current_ticks = xTaskGetTickCount();
+
+    TickType_t remaining_ticks;
+    if (expiry_time > current_ticks)
+    {
+        remaining_ticks = expiry_time - current_ticks;
+    }
+    else
+    {
+        return 0;
+    }
+
+    uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+    return remaining_ms / 1000;
+}
+
+uint32_t event_manager_get_feed_timer_remaining_sec(void)
+{
+    if (feeding_timer == NULL || g_feeding_interval_sec == 0)
+    {
+        return 0;
+    }
+
+    time_t current_time = time(NULL);
+    if (current_time < 1000000000)
+    {
+        // Invalid system time, fall back to timer
+        if (xTimerIsTimerActive(feeding_timer) == pdFALSE)
+        {
+            return 0;
+        }
+
+        TickType_t expiry_time = xTimerGetExpiryTime(feeding_timer);
+        TickType_t current_ticks = xTaskGetTickCount();
+
+        TickType_t remaining_ticks;
+        if (expiry_time > current_ticks)
+        {
+            remaining_ticks = expiry_time - current_ticks;
+        }
+        else
+        {
+            return 0;
+        }
+
+        uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+        return remaining_ms / 1000;
+    }
+
+    // Calculate based on last feed time
+    if (g_last_feed_time > 0)
+    {
+        time_t elapsed = current_time - g_last_feed_time;
+        if (elapsed < (time_t)g_feeding_interval_sec)
+        {
+            return g_feeding_interval_sec - (uint32_t)elapsed;
+        }
+        else
+        {
+            // Interval has already passed
+            return 0;
+        }
+    }
+
+    // No last feed time, check timer
+    if (xTimerIsTimerActive(feeding_timer) == pdFALSE)
+    {
+        return 0;
+    }
+
+    TickType_t expiry_time = xTimerGetExpiryTime(feeding_timer);
+    TickType_t current_ticks = xTaskGetTickCount();
+
+    TickType_t remaining_ticks;
+    if (expiry_time > current_ticks)
+    {
+        remaining_ticks = expiry_time - current_ticks;
+    }
+    else
+    {
+        return 0;
+    }
+
+    uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+    return remaining_ms / 1000;
+}
+
+static uint32_t get_publish_timer_remaining_sec(void)
+{
+    if (publish_timer == NULL || publish_interval_sec == 0)
+    {
+        return 0;
+    }
+
+    time_t current_time = time(NULL);
+    if (current_time < 1000000000)
+    {
+        // Invalid system time, fall back to timer
+        if (xTimerIsTimerActive(publish_timer) == pdFALSE)
+        {
+            return 0;
+        }
+
+        TickType_t expiry_time = xTimerGetExpiryTime(publish_timer);
+        TickType_t current_ticks = xTaskGetTickCount();
+
+        TickType_t remaining_ticks;
+        if (expiry_time > current_ticks)
+        {
+            remaining_ticks = expiry_time - current_ticks;
+        }
+        else
+        {
+            return 0;
+        }
+
+        uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+        return remaining_ms / 1000;
+    }
+
+    // Calculate based on last publish time
+    if (g_last_publish_time > 0)
+    {
+        time_t elapsed = current_time - g_last_publish_time;
+        if (elapsed < (time_t)publish_interval_sec)
+        {
+            return publish_interval_sec - (uint32_t)elapsed;
+        }
+        else
+        {
+            // Interval has already passed
+            return 0;
+        }
+    }
+
+    // No last publish time, check timer
+    if (xTimerIsTimerActive(publish_timer) == pdFALSE)
+    {
+        return 0;
+    }
+
+    TickType_t expiry_time = xTimerGetExpiryTime(publish_timer);
+    TickType_t current_ticks = xTaskGetTickCount();
+
+    TickType_t remaining_ticks;
+    if (expiry_time > current_ticks)
+    {
+        remaining_ticks = expiry_time - current_ticks;
+    }
+    else
+    {
+        return 0;
+    }
+
+    uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+    return remaining_ms / 1000;
+}
+
+static uint32_t get_ble_timer_remaining_sec(void)
+{
+    if (ble_timer == NULL)
+    {
+        return 0;
+    }
+
+    if (xTimerIsTimerActive(ble_timer) == pdFALSE)
+    {
+        return 0;
+    }
+
+    TickType_t expiry_time = xTimerGetExpiryTime(ble_timer);
+    TickType_t current_time = xTaskGetTickCount();
+
+    // Handle timer overflow
+    TickType_t remaining_ticks;
+    if (expiry_time > current_time)
+    {
+        remaining_ticks = expiry_time - current_time;
+    }
+    else
+    {
+        // Timer has already expired or will expire very soon
+        return 0;
+    }
+
+    // Convert ticks to seconds (portTICK_PERIOD_MS is in milliseconds)
+    uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+    return remaining_ms / 1000;
+}
+
+static void activity_counter_increment(void)
+{
+    if (activity_counter_mutex != NULL && xSemaphoreTake(activity_counter_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        activity_counter++;
+        ESP_LOGD(TAG, "Activity counter incremented to %ld", (long)activity_counter);
+        xSemaphoreGive(activity_counter_mutex);
+    }
+}
+
+static void activity_counter_decrement(void)
+{
+    if (activity_counter_mutex != NULL && xSemaphoreTake(activity_counter_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        if (activity_counter > 0)
+        {
+            activity_counter--;
+        }
+        ESP_LOGD(TAG, "Activity counter decremented to %ld", (long)activity_counter);
+        xSemaphoreGive(activity_counter_mutex);
+    }
+}
+
+void event_manager_activity_counter_increment(void)
+{
+    activity_counter_increment();
+}
+
+void event_manager_activity_counter_decrement(void)
+{
+    activity_counter_decrement();
+}
+
+bool event_manager_is_activity_running(void)
+{
+    bool running = false;
+    if (activity_counter_mutex != NULL && xSemaphoreTake(activity_counter_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        running = activity_counter > 0;
+        xSemaphoreGive(activity_counter_mutex);
+    }
+    return running;
+}
+
 // BLE task
 void event_manager_ble_task(void *pvParameters)
 {
     (void)pvParameters;
-    TaskHandle_t task_handle = xTaskGetCurrentTaskHandle();
-    event_manager_register_notification(task_handle, EVENT_BIT_CONFIG_MODE | EVENT_BIT_PASSKEY_DISPLAY);
 
     while (1)
     {
-        uint32_t notif = 0;
-        bool config_mode = false;
-
-        while (1)
+        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_BLE_ADVERTISING | EVENT_BIT_PAIRING_MODE, false, false, portMAX_DELAY);
+        if (bits & EVENT_BIT_BLE_ADVERTISING)
         {
-            EventBits_t bits = event_manager_get_bits();
+            ble_start_advertising();
+            activity_counter_increment();
 
-            if (bits & EVENT_BIT_CONFIG_MODE)
+            TaskHandle_t task_handle = xTaskGetCurrentTaskHandle();
+            event_manager_register_notification(task_handle, EVENT_BIT_BLE_CONNECTED);
+            uint32_t notif = 0;
+
+            bits = event_manager_wait_bits(EVENT_BIT_BLE_CONNECTED, false, false, pdMS_TO_TICKS(GATT_SERVER_TIMEOUT_MS));
+            if (bits & EVENT_BIT_BLE_CONNECTED)
             {
-                if (!config_mode)
+                ESP_LOGI(TAG, "Device connected");
+                bits = event_manager_wait_bits(~EVENT_BIT_BLE_CONNECTED, false, false, pdMS_TO_TICKS(GATT_SERVER_TIMEOUT_MS));
+                if (bits & ~EVENT_BIT_BLE_CONNECTED)
                 {
-                    ble_start_advertising();
-                    ESP_LOGI(TAG, "Advertising started");
-                    config_mode = true;
+                    ESP_LOGI(TAG, "Device disconnected");
                 }
-
-                hardware_manager_display_interrupt();
-                xTaskNotifyWait(0, UINT32_MAX, &notif, pdMS_TO_TICKS(GATT_SERVER_TIMEOUT_MS));
-
-                if (notif)
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Device not connected, stopping advertising");
+            }
+            ble_stop_advertising();
+            activity_counter_decrement();
+            event_manager_clear_bits(EVENT_BIT_BLE_ADVERTISING);
+            event_manager_set_bits(EVENT_BIT_DEEP_SLEEP);
+            xTimerStart(ble_timer, portMAX_DELAY);
+        }
+        else if (bits & EVENT_BIT_PAIRING_MODE)
+        {
+            ESP_LOGI(TAG, "Pairing mode active");
+            activity_counter_increment();
+            ble_start_advertising();
+            hardware_manager_display_event("pairing", NAN);
+            bits = event_manager_wait_bits(EVENT_BIT_PASSKEY_DISPLAY, false, false, pdMS_TO_TICKS(PAIRING_TIMEOUT_MS));
+            if (bits & EVENT_BIT_PASSKEY_DISPLAY)
+            {
+                ESP_LOGI(TAG, "Displaying passkey");
+                hardware_manager_display_event("passkey", event_manager_get_passkey());
+                bits = event_manager_wait_bits(EVENT_BIT_PAIRING_SUCCESS, true, false, pdMS_TO_TICKS(PAIRING_TIMEOUT_MS));
+                if (bits & EVENT_BIT_PAIRING_SUCCESS)
                 {
-                    bits = event_manager_get_bits();
-                    if (bits & EVENT_BIT_PASSKEY_DISPLAY) // PASSKEY_DISPLAY set
-                    {
-                        hardware_manager_display_interrupt();
-                        xTaskNotifyWait(0, UINT32_MAX, &notif, pdMS_TO_TICKS(GATT_SERVER_TIMEOUT_MS));
-                        if (!notif) // PASSKEY_DISPLAY not cleared
-                        {
-                            ESP_LOGI(TAG, "Passkey timeout");
-                            event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
-                            ble_stop_advertising();
-                            hardware_manager_display_update();
-                        }
-                        notif = 0;
-                        continue;
-                    }
-                    else // CONFIG_MODE cleared
-                    {
-                        ESP_LOGI(TAG, "Config mode off");
-                        ble_stop_advertising();
-                        notif = 0;
-                        continue;
-                    }
+                    ESP_LOGI(TAG, "Device paired successfully");
+                    event_manager_set_bits(EVENT_BIT_BLE_ADVERTISING);
                 }
-                else // CONFIG_MODE not cleared
+                else
                 {
-                    ESP_LOGI(TAG, "Config mode timeout");
-                    event_manager_clear_bits(EVENT_BIT_CONFIG_MODE);
-                    ble_stop_advertising();
-                    hardware_manager_display_update();
-                    notif = 0;
+                    ESP_LOGI(TAG, "Pairing timeout");
+                }
+                event_manager_clear_bits(EVENT_BIT_PASSKEY_DISPLAY);
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Pairing timeout");
+            }
+            event_manager_clear_bits(EVENT_BIT_PAIRING_MODE);
+            ble_stop_advertising();
+            activity_counter_decrement();
+            hardware_manager_display_update();
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+    }
+}
+
+static void event_manager_provisioning_task(void *pvParameters)
+{
+    (void)pvParameters;
+    while (1)
+    {
+        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_PROVISIONING_CHANGED, true, false, portMAX_DELAY);
+        if (bits & EVENT_BIT_PROVISIONING_CHANGED)
+        {
+            activity_counter_increment();
+            ESP_LOGI(TAG, "Provisioning changed, reloading configurations");
+            mqtt_manager_load_config();
+            wifi_manager_load_config();
+            activity_counter_decrement();
+        }
+    }
+}
+
+static void event_manager_action_task(void *pvParameters)
+{
+    (void)pvParameters;
+    uint32_t notif = 0;
+    TaskHandle_t task_handle = xTaskGetCurrentTaskHandle();
+    event_manager_register_notification(task_handle, EVENT_BIT_PH_CONFIRMED);
+
+    while (1)
+    {
+        EventBits_t bits = event_manager_wait_bits(
+            EVENT_BIT_TEMP_SCHEDULED | EVENT_BIT_PH_SCHEDULED | EVENT_BIT_FEED_SCHEDULED,
+            false, // Don't clear on exit - we'll clear individually
+            false, // Wait for any
+            portMAX_DELAY);
+
+        activity_counter_increment();
+        if (bits & EVENT_BIT_TEMP_SCHEDULED)
+        {
+            hardware_manager_display_event("temp_measurement_screen", NAN);
+            float temp = hardware_manager_measure_temp();
+            if (!isnan(temp))
+            {
+                // mqtt_manager_enqueue_temperature(temp);
+                ble_manager_notify_temperature(temp);
+                g_last_temp_measurement_time = time(NULL);
+                nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_temp", &g_last_temp_measurement_time, sizeof(time_t));
+            }
+            else
+            {
+                // mqtt_manager_enqueue_log("hardware_error", "temperature_read_failed");
+            }
+            event_manager_clear_bits(EVENT_BIT_TEMP_SCHEDULED);
+        }
+
+        if (bits & EVENT_BIT_PH_SCHEDULED)
+        {
+            EventBits_t ph_bits = event_manager_get_bits();
+            bool ph_confirmed = (ph_bits & EVENT_BIT_PH_CONFIRMED) != 0;
+            if (!ph_confirmed)
+            {
+                hardware_manager_display_event("ph_confirmation_screen", NAN);
+                xTaskNotifyWait(0, UINT32_MAX, &notif, pdMS_TO_TICKS(PH_CONFIRMATION_TIMEOUT_MS));
+                if (!notif) // PH_CONFIRMED not set
+                {
+                    ESP_LOGI(TAG, "pH confirmation timeout");
+                    event_manager_clear_bits(EVENT_BIT_PH_SCHEDULED);
                     continue;
                 }
+                else
+                {
+                    ESP_LOGI(TAG, "pH confirmation received");
+                }
             }
-
-            else // No notification
+            hardware_manager_display_event("ph_measurement_screen", NAN);
+            float ph_value = hardware_manager_measure_ph();
+            event_manager_clear_bits(EVENT_BIT_PH_SCHEDULED);
+            event_manager_clear_bits(EVENT_BIT_PH_CONFIRMED);
+            if (!isnan(ph_value))
             {
-                xTaskNotifyWait(0, UINT32_MAX, &notif, portMAX_DELAY);
-                config_mode = false;
-                notif = 0;
-                continue;
+                // mqtt_manager_enqueue_ph(ph_value);
+                ble_manager_notify_ph(ph_value);
+            }
+            else
+            {
+                // mqtt_manager_enqueue_log("hardware_error", "ph_read_failed");
             }
         }
+
+        // Handle feeding
+        if (bits & EVENT_BIT_FEED_SCHEDULED)
+        {
+            bool feed_successful = hardware_manager_feed();
+            // mqtt_manager_enqueue_feed(feed_successful);
+            ble_manager_notify_feed(feed_successful);
+            g_last_feed_time = time(NULL);
+            nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_feed", &g_last_feed_time, sizeof(time_t));
+            event_manager_clear_bits(EVENT_BIT_FEED_SCHEDULED);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        hardware_manager_display_update();
+        activity_counter_decrement();
     }
 }
 
@@ -185,6 +843,7 @@ void event_manager_ble_task(void *pvParameters)
 void event_manager_display_task(void *pvParameters)
 {
     (void)pvParameters;
+
     while (1)
     {
         EventBits_t bits = event_manager_wait_bits(EVENT_BIT_DISPLAY_NEXT | EVENT_BIT_DISPLAY_PREV | EVENT_BIT_DISPLAY_CONFIRM, true, false, portMAX_DELAY);
@@ -196,329 +855,248 @@ void event_manager_display_task(void *pvParameters)
         }
         else if (bits & EVENT_BIT_DISPLAY_PREV)
         {
-            ESP_LOGI(TAG, "Display previous");
             hardware_manager_display_prev();
         }
         else if (bits & EVENT_BIT_DISPLAY_CONFIRM)
         {
-            ESP_LOGI(TAG, "Display confirm");
             hardware_manager_display_confirm();
         }
     }
 }
 
-// Measurement task
-static void event_manager_measurement_task(void *pvParameters)
-{
-    (void)pvParameters;
-    ESP_LOGI(TAG, "Sensor measurement task started");
-    uint32_t notif = 0;
-    TaskHandle_t task_handle = xTaskGetCurrentTaskHandle();
-    event_manager_register_notification(task_handle, EVENT_BIT_PH_CONFIRMED);
-
-    while (1)
-    {
-        EventBits_t bits = event_manager_wait_bits(
-            EVENT_BIT_TEMP_SCHEDULED | EVENT_BIT_PH_SCHEDULED,
-            false,
-            false,
-            portMAX_DELAY);
-
-        if (bits & EVENT_BIT_TEMP_SCHEDULED)
-        {
-            hardware_manager_display_interrupt();
-            float temp = hardware_manager_measure_temp();
-            event_manager_clear_bits(EVENT_BIT_TEMP_SCHEDULED);
-            if (!isnan(temp))
-            {
-                aquarium_data_update_temperature(temp);
-                event_manager_set_bits(EVENT_BIT_TEMP_UPDATED);
-                // Display result for 1 second
-                hardware_manager_display_interrupt_with_value(temp, true);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            }
-        }
-
-        if (bits & EVENT_BIT_PH_SCHEDULED)
-        {
-            hardware_manager_display_interrupt();
-            xTaskNotifyWait(0, UINT32_MAX, &notif, pdMS_TO_TICKS(PH_CONFIRMATION_TIMEOUT_MS));
-            if (!notif) // PH_CONFIRMED not set
-            {
-                ESP_LOGI(TAG, "pH confirmation timeout");
-                event_manager_clear_bits(EVENT_BIT_PH_SCHEDULED);
-                continue;
-            }
-            else
-            {
-                ESP_LOGI(TAG, "pH confirmed");
-                hardware_manager_display_interrupt();
-            }
-            float ph_value = hardware_manager_measure_ph();
-            event_manager_clear_bits(EVENT_BIT_PH_SCHEDULED);
-            event_manager_clear_bits(EVENT_BIT_PH_CONFIRMED);
-            if (!isnan(ph_value))
-            {
-                aquarium_data_update_ph(ph_value);
-                event_manager_set_bits(EVENT_BIT_PH_UPDATED);
-                hardware_manager_display_interrupt_with_value(ph_value, false);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            }
-        }
-        hardware_manager_display_update();
-    }
-}
-
-// Feeding task
-void event_manager_feeding_task(void *pvParameters)
-{
-    (void)pvParameters;
-    ESP_LOGI(TAG, "Feed coordinator task started");
-
-    while (1)
-    {
-        EventBits_t bits = event_manager_wait_bits(
-            EVENT_BIT_FEED_SCHEDULED,
-            true,  // Clear on exit
-            false, // Wait for any
-            portMAX_DELAY);
-
-        if (bits & EVENT_BIT_FEED_SCHEDULED)
-        {
-            TaskHandle_t beam_task_handle = NULL;
-            hardware_manager_start_beam_monitor(&beam_task_handle);
-
-            bool feed_successful = false;
-            for (int attempt = 1; attempt <= MAX_FEED_ATTEMPTS; attempt++)
-            {
-                ESP_LOGI(TAG, "Feeding attempt %d/%d", attempt, MAX_FEED_ATTEMPTS);
-
-                if (attempt > 1)
-                {
-                    hardware_manager_motor_rotate_portion(false);
-                    vTaskDelay(pdMS_TO_TICKS(GPIO_MOTOR_RETRY_DELAY_MS));
-                }
-
-                hardware_manager_motor_rotate_portion(true);
-                vTaskDelay(pdMS_TO_TICKS(GPIO_MOTOR_RETRY_DELAY_MS));
-
-                if (beam_task_handle == NULL)
-                {
-                    feed_successful = true;
-                    ESP_LOGI(TAG, "Beam break detected on attempt %d", attempt);
-                    break;
-                }
-            }
-
-            if (beam_task_handle != NULL)
-            {
-                hardware_manager_stop_beam_monitor(beam_task_handle);
-                beam_task_handle = NULL;
-            }
-
-            time_t feed_time = time(NULL);
-            if (feed_time > 1000000000)
-            {
-                aquarium_data_update_last_feed(feed_time, feed_successful);
-                ESP_LOGI(TAG, "Feed time saved: %ld", (long)feed_time);
-            }
-            else
-            {
-                ESP_LOGW(TAG, "System time not synchronized, feed time not saved (time=%ld)", (long)feed_time);
-            }
-
-            uint32_t feeding_interval = aquarium_data_get_feeding_interval();
-            if (feeding_interval > 0)
-            {
-                time_t next_feed_time = feed_time + feeding_interval;
-                aquarium_data_update_next_feed(next_feed_time);
-            }
-
-            event_manager_set_bits(EVENT_BIT_FEED_UPDATED);
-            hardware_manager_display_update();
-
-            if (feed_successful)
-            {
-                ESP_LOGI(TAG, "Feed successful, updating last feed time");
-            }
-            else
-            {
-                ESP_LOGW(TAG, "Feed failed - no beam break detected after %d attempts", MAX_FEED_ATTEMPTS);
-            }
-        }
-    }
-}
-
-// Rescheduling task
-void event_manager_scheduling_task(void *pvParameters)
-{
-    (void)pvParameters;
-    while (1)
-    {
-        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_TEMP_RESCHEDULED | EVENT_BIT_FEED_RESCHEDULED, true, false, portMAX_DELAY);
-        if (bits & EVENT_BIT_TEMP_RESCHEDULED)
-        {
-            int temp_frequency = mqtt_manager_get_temp_frequency();
-            aquarium_data_set_temp_reading_interval(temp_frequency);
-            hardware_manager_set_temp_reading_interval(temp_frequency);
-        }
-        if (bits & EVENT_BIT_FEED_RESCHEDULED)
-        {
-            int feed_frequency = mqtt_manager_get_feed_frequency();
-            aquarium_data_set_feeding_interval(feed_frequency);
-            hardware_manager_set_feeding_interval(feed_frequency);
-            event_manager_set_bits(EVENT_BIT_FEED_SCHEDULED);
-        }
-    }
-}
-
-// Publish task
-void event_manager_publish_task(void *pvParameters)
+// Connection task
+void event_manager_connection_task(void *pvParameters)
 {
     (void)pvParameters;
 
     while (1)
     {
-        EventBits_t bits = event_manager_wait_bits(
-            EVENT_BIT_TEMP_UPDATED | EVENT_BIT_PH_UPDATED | EVENT_BIT_FEED_UPDATED | EVENT_BIT_PROVISION_TRIGGER,
-            true,
-            false,
-            portMAX_DELAY);
-
-        esp_err_t err = mqtt_manager_start();
-        if (err != ESP_OK)
+        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_PUBLISH_SCHEDULED, false, false, portMAX_DELAY);
+        if (bits & EVENT_BIT_PUBLISH_SCHEDULED)
         {
-            ESP_LOGW(TAG, "Failed to start MQTT client: %s. Cannot enqueue.", esp_err_to_name(err));
-            continue;
-        }
-        else
-        {
-            ESP_LOGI(TAG, "MQTT client started");
-        }
-
-        aquarium_data_t data;
-        event_manager_get_aquarium_data(&data);
-        char message[64];
-        time_t timestamp = time(NULL);
-
-        if (bits & EVENT_BIT_TEMP_UPDATED)
-        {
-            snprintf(message, sizeof(message), "%.2f,%ld", data.temperature, (long)timestamp);
-            mqtt_manager_enqueue_data("temperature", message);
-            ESP_LOGI(TAG, "Enqueued temperature: %s", message);
-        }
-
-        if (bits & EVENT_BIT_PH_UPDATED)
-        {
-            snprintf(message, sizeof(message), "%.2f,%ld", data.ph, (long)timestamp);
-            mqtt_manager_enqueue_data("ph", message);
-            ESP_LOGI(TAG, "Enqueued pH: %s", message);
-        }
-
-        if (bits & EVENT_BIT_FEED_UPDATED)
-        {
-            const char *status = data.last_feed_success ? "success" : "failure";
-            snprintf(message, sizeof(message), "%ld,%s", (long)data.last_feed_time, status);
-            mqtt_manager_enqueue_data("feed", message);
-            ESP_LOGI(TAG, "Enqueued feed: %s", message);
-        }
-
-        if (bits & EVENT_BIT_PROVISION_TRIGGER)
-        {
-            ESP_LOGI(TAG, "Provisioning trigger received, reloading configurations");
-
-            esp_err_t err = wifi_manager_load_config();
-            if (err != ESP_OK)
+            ESP_LOGI(TAG, "Publish scheduled");
+            activity_counter_increment();
+            wifi_manager_start();
+            mqtt_manager_start();
+            bits = event_manager_wait_bits(EVENT_BIT_WIFI_STATUS | EVENT_BIT_MQTT_STATUS, false, true, pdMS_TO_TICKS(CONNECTION_TIMEOUT_MS));
+            if (!(bits & EVENT_BIT_WIFI_STATUS) || !(bits & EVENT_BIT_MQTT_STATUS))
             {
-                ESP_LOGW(TAG, "Failed to reload WiFi config: %s", esp_err_to_name(err));
-            }
-
-            err = mqtt_manager_load_config();
-            if (err != ESP_OK)
-            {
-                ESP_LOGW(TAG, "Failed to reload MQTT config: %s", esp_err_to_name(err));
+                ESP_LOGW(TAG, "Publish failed - WiFi=%d, MQTT=%d",
+                         (bits & EVENT_BIT_WIFI_STATUS) != 0,
+                         (bits & EVENT_BIT_MQTT_STATUS) != 0);
             }
             else
             {
-                ESP_LOGI(TAG, "MQTT configuration reloaded successfully");
-                mqtt_manager_enqueue_data("logs", "{\"status\":\"provisioned\"}");
+                ESP_LOGI(TAG, "Connection successful");
+                mqtt_manager_publish();
+                g_last_publish_time = time(NULL);
+                nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_publish", &g_last_publish_time, sizeof(time_t));
             }
-        }
 
-        err = wifi_manager_start();
-        bits = event_manager_wait_bits(EVENT_BIT_WIFI_STATUS, true, false, pdMS_TO_TICKS(CONNECTION_TIMEOUT_MS));
-        if (!(bits & EVENT_BIT_WIFI_STATUS))
-        {
-            ESP_LOGW(TAG, "WiFi connection timeout");
-            wifi_manager_stop();
-            continue;
-        }
-
-        bits = event_manager_wait_bits(EVENT_BIT_MQTT_STATUS, true, false, pdMS_TO_TICKS(CONNECTION_TIMEOUT_MS));
-        if (!(bits & EVENT_BIT_MQTT_STATUS))
-        {
-            ESP_LOGW(TAG, "MQTT connection timeout");
             mqtt_manager_stop();
             wifi_manager_stop();
-            continue;
+            activity_counter_decrement();
+            event_manager_clear_bits(EVENT_BIT_PUBLISH_SCHEDULED);
         }
+    }
+}
 
-        ESP_LOGI(TAG, "Data sent");
-        mqtt_manager_stop();
-        wifi_manager_stop();
+// Sleep task
+void event_manager_sleep_task(void *pvParameters)
+{
+    (void)pvParameters;
+    while (1)
+    {
+        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_DEEP_SLEEP, true, false, pdMS_TO_TICKS(portMAX_DELAY));
+
+        if (bits & EVENT_BIT_DEEP_SLEEP)
+        {
+            if (event_manager_is_activity_running())
+            {
+                ESP_LOGI(TAG, "Deep sleep requested but activities are running, waiting...");
+                continue;
+            }
+
+            uint32_t temp_remaining = event_manager_get_temp_timer_remaining_sec();
+            uint32_t feed_remaining = event_manager_get_feed_timer_remaining_sec();
+            uint32_t ble_remaining = get_ble_timer_remaining_sec();
+            uint32_t publish_remaining = get_publish_timer_remaining_sec();
+
+            ESP_LOGI(TAG, "Timer remaining times - Temp: %lu sec, Feed: %lu sec, BLE: %lu sec, Publish: %lu sec",
+                     (unsigned long)temp_remaining,
+                     (unsigned long)feed_remaining,
+                     (unsigned long)ble_remaining,
+                     (unsigned long)publish_remaining);
+
+            uint32_t shortest_remaining = UINT32_MAX;
+
+            if (temp_remaining > 0 && temp_remaining < shortest_remaining)
+            {
+                shortest_remaining = temp_remaining;
+            }
+            if (feed_remaining > 0 && feed_remaining < shortest_remaining)
+            {
+                shortest_remaining = feed_remaining;
+            }
+            if (ble_remaining > 0 && ble_remaining < shortest_remaining)
+            {
+                shortest_remaining = ble_remaining;
+            }
+            if (publish_remaining > 0 && publish_remaining < shortest_remaining)
+            {
+                shortest_remaining = publish_remaining;
+            }
+
+            uint64_t sleep_duration_us;
+
+            if (shortest_remaining != UINT32_MAX && shortest_remaining > 0)
+            {
+                sleep_duration_us = (uint64_t)shortest_remaining * 1000000ULL;
+                ESP_LOGI(TAG, "Using shortest timer: %lu seconds",
+                         (unsigned long)shortest_remaining, (long long)sleep_duration_us);
+            }
+            else
+            {
+                sleep_duration_us = 60ULL * 60ULL * 1000000ULL; // 1 hour
+                ESP_LOGI(TAG, "No active timers, defaulting to 1 hour (%lld microseconds)",
+                         (long long)sleep_duration_us);
+            }
+
+            esp_sleep_enable_timer_wakeup(sleep_duration_us);
+            esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON); // Keep RTC peripherals powered
+            esp_sleep_enable_ext0_wakeup(GPIO_CONFIRM_BUTTON, 0);            // 0 = wake on LOW (button pressed)
+
+            time_t sleep_timestamp = time(NULL);
+            if (sleep_timestamp > 1000000000)
+            {
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+
+            esp_deep_sleep_start();
+        }
     }
 }
 
 void event_manager_init(void)
 {
     s_event_group = xEventGroupCreate();
+    activity_counter_mutex = xSemaphoreCreateMutex();
+    if (activity_counter_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create activity counter mutex");
+    }
     num_notifications = 0;
 
-    aquarium_data_init();
+    hardware_manager_init();
     wifi_manager_init();
     ble_manager_init();
     mqtt_manager_init();
-    hardware_manager_init();
+
+    esp_sleep_wakeup_cause_t wake_reason = esp_sleep_get_wakeup_cause();
+
+    if (wake_reason == ESP_SLEEP_WAKEUP_TIMER)
+    {
+        ESP_LOGI(TAG, "Woke up from deep sleep - timer expired");
+    }
+    else if (wake_reason == ESP_SLEEP_WAKEUP_EXT0)
+    {
+        ESP_LOGI(TAG, "Woke up from deep sleep - button pressed (GPIO %d)", GPIO_CONFIRM_BUTTON);
+        hardware_manager_display_wake();
+        hardware_manager_display_update();
+    }
+    else if (wake_reason == ESP_SLEEP_WAKEUP_UNDEFINED)
+    {
+        hardware_manager_display_wake();
+        hardware_manager_display_update();
+    }
 
     xTaskCreate(
         event_manager_ble_task,
         "ble_coordinator",
-        4096,
+        4 * 1024,
         NULL,
         2,
         NULL);
 
     xTaskCreate(
+        event_manager_provisioning_task,
+        "provisioning_coordinator",
+        4 * 1024,
+        NULL,
+        2,
+        NULL);
+
+    xTaskCreate(
+        event_manager_action_task,
+        "action_coordinator",
+        4 * 1024,
+        NULL,
+        3,
+        NULL);
+
+    xTaskCreate(
         event_manager_display_task,
         "display_coordinator",
-        2048,
+        2 * 1024,
         NULL,
         3,
         NULL);
 
     xTaskCreate(
-        event_manager_measurement_task,
-        "measurement_coordinator",
-        4096,
+        event_manager_sleep_task,
+        "sleep_coordinator",
+        4 * 1024,
         NULL,
-        3,
+        1,
         NULL);
 
     xTaskCreate(
-        event_manager_feeding_task,
-        "feeding_coordinator",
-        2048,
+        event_manager_connection_task,
+        "connection_coordinator",
+        8 * 1024,
         NULL,
-        4,
+        2,
         NULL);
 
-    xTaskCreate(
-        event_manager_publish_task,
-        "publish_coordinator",
-        4096,
+    publish_timer = xTimerCreate(
+        "publish_timer",
+        pdMS_TO_TICKS(1000), // Initial period (will be changed by setter)
+        pdTRUE,              // Auto-reload: timer will reset itself when it expires
+        NULL,                // Timer ID (not used)
+        publish_timer_callback);
+
+    temp_reading_timer = xTimerCreate(
+        "temp_reading_timer",
+        pdMS_TO_TICKS(1000), // Initial period (will be changed by setter)
+        pdTRUE,              // Auto-reload: timer will reset itself when it expires
+        NULL,                // Timer ID (not used)
+        temp_reading_timer_callback);
+
+    feeding_timer = xTimerCreate(
+        "feeding_timer",
+        pdMS_TO_TICKS(1000), // Initial period (will be changed by setter)
+        pdTRUE,              // Auto-reload: timer will reset itself when it expires
+        NULL,                // Timer ID (not used)
+        feeding_timer_callback);
+
+    ble_timer = xTimerCreate(
+        "ble_connection_timer",
+        pdMS_TO_TICKS(ADVERTISING_INTERVAL_MS),
+        pdFALSE,
         NULL,
-        5,
-        NULL);
+        ble_connection_timer_callback);
+
+    if (publish_timer == NULL || temp_reading_timer == NULL || feeding_timer == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create timers");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "All timers created successfully");
+    }
+
+    load_intervals();
+    event_manager_set_bits(EVENT_BIT_BLE_ADVERTISING);
 
     ESP_LOGI(TAG, "Event manager initialized");
 }

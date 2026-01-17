@@ -12,6 +12,7 @@
 static const char *TAG = "break_beam";
 static QueueHandle_t gpio_evt_queue = NULL;
 static gpio_num_t beam_gpio = GPIO_NUM_NC;
+static gpio_num_t beam_power_gpio = GPIO_NUM_NC;
 
 static void IRAM_ATTR beam_isr(void *arg)
 {
@@ -45,19 +46,41 @@ void break_beam_monitor(void *pvParameters)
         {
             if (io_level == 0)
             {
-                ESP_LOGI(TAG, "Beam broken");
                 break;
             }
         }
     }
+
     *task_handle = NULL;
     vTaskDelete(NULL);
 }
 
-void break_beam_init(gpio_num_t gpio)
+void break_beam_power_on(void)
+{
+    if (beam_power_gpio != GPIO_NUM_NC)
+    {
+        gpio_set_level(beam_power_gpio, 1);
+        ESP_LOGI(TAG, "Break beam sensor powered on");
+        // Small delay to allow sensor to stabilize
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+void break_beam_power_off(void)
+{
+    if (beam_power_gpio != GPIO_NUM_NC)
+    {
+        gpio_set_level(beam_power_gpio, 0);
+        ESP_LOGI(TAG, "Break beam sensor powered off");
+    }
+}
+
+void break_beam_init(gpio_num_t gpio, gpio_num_t power_gpio)
 {
     beam_gpio = gpio;
+    beam_power_gpio = power_gpio;
 
+    // Configure the sensor input GPIO
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << gpio),
         .mode = GPIO_MODE_INPUT,
@@ -70,6 +93,28 @@ void break_beam_init(gpio_num_t gpio)
     {
         ESP_LOGE(TAG, "Failed to configure GPIO %d: %s", (int)gpio, esp_err_to_name(ret));
         return;
+    }
+
+    // Configure the power GPIO
+    if (power_gpio != GPIO_NUM_NC)
+    {
+        gpio_config_t power_conf = {
+            .pin_bit_mask = (1ULL << power_gpio),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE};
+
+        ret = gpio_config(&power_conf);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to configure power GPIO %d: %s", (int)power_gpio, esp_err_to_name(ret));
+            return;
+        }
+
+        // Initialize power GPIO to OFF
+        gpio_set_level(power_gpio, 0);
+        ESP_LOGI(TAG, "Break beam power GPIO %d configured (initially OFF)", (int)power_gpio);
     }
 
     gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
