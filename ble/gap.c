@@ -5,6 +5,7 @@
 #include "host/ble_store.h"
 #include "host/ble_att.h"
 #include "store/config/ble_store_config.h"
+#include "esp_mac.h"
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
@@ -46,9 +47,13 @@ static int ble_gap_passkey_action_cb(struct ble_gap_event *event, void *arg)
     int rc = 0;
     struct ble_gap_conn_desc desc;
 
+    ESP_LOGI(TAG, "Passkey action callback: conn_handle=%d, action=%d",
+             event->passkey.conn_handle, event->passkey.params.action);
+
     switch (event->passkey.params.action)
     {
     case BLE_SM_IOACT_DISP:
+        ESP_LOGI(TAG, "Passkey display requested (BLE_SM_IOACT_DISP)");
         // Check if device is already bonded
         rc = ble_gap_conn_find(event->passkey.conn_handle, &desc);
         if (rc != 0)
@@ -57,13 +62,16 @@ static int ble_gap_passkey_action_cb(struct ble_gap_event *event, void *arg)
             return rc;
         }
 
+        ESP_LOGI(TAG, "Connection security state: encrypted=%d, authenticated=%d, bonded=%d",
+                 desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
+
         // Only display passkey if device is not bonded
         if (!desc.sec_state.bonded)
         {
             current_passkey = generate_passkey();
             passkey_conn_handle = event->passkey.conn_handle;
 
-            ESP_LOGI(TAG, "Passkey: %06lu", (unsigned long)current_passkey);
+            ESP_LOGI(TAG, "Generated passkey: %06lu", (unsigned long)current_passkey);
 
             event_manager_set_bits(EVENT_BIT_PASSKEY_DISPLAY);
             struct ble_sm_io io_data = {
@@ -73,6 +81,10 @@ static int ble_gap_passkey_action_cb(struct ble_gap_event *event, void *arg)
             if (rc != 0)
             {
                 ESP_LOGE(TAG, "Failed to inject passkey: %d (0x%04x)", rc, rc);
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Passkey injected successfully, should be displayed");
             }
         }
         else
@@ -87,6 +99,22 @@ static int ble_gap_passkey_action_cb(struct ble_gap_event *event, void *arg)
                 ESP_LOGE(TAG, "Failed to inject IO: %d (0x%04x)", rc, rc);
             }
         }
+        break;
+
+    case BLE_SM_IOACT_NONE:
+        ESP_LOGI(TAG, "Passkey action: NONE (no passkey required)");
+        break;
+
+    case BLE_SM_IOACT_INPUT:
+        ESP_LOGI(TAG, "Passkey action: INPUT (client should input passkey)");
+        break;
+
+    case BLE_SM_IOACT_NUMCMP:
+        ESP_LOGI(TAG, "Passkey action: NUMCMP (numeric comparison)");
+        break;
+
+    default:
+        ESP_LOGW(TAG, "Unknown passkey action: %d", event->passkey.params.action);
         break;
     }
 
@@ -181,29 +209,31 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "Connection security: encrypted=%d, authenticated=%d, bonded=%d",
                      desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
 
-            if (desc.sec_state.bonded)
+            // Check if device is bonded or if we have stored bond information
+            bool is_bonded = desc.sec_state.bonded;
+            bool pairing_mode = (event_manager_get_bits() & EVENT_BIT_PAIRING_MODE) != 0;
+
+            // If not marked as bonded yet, check if we have stored bond info
+            if (!is_bonded && desc.peer_id_addr.type <= BLE_ADDR_RANDOM_ID)
             {
-                ESP_LOGI(TAG, "Device is already bonded, using existing bond");
-                event_manager_set_bits(EVENT_BIT_BLE_CONNECTED);
-            }
-            else
-            {
-                ESP_LOGI(TAG, "Device not bonded");
-                if (event_manager_get_bits() & EVENT_BIT_PAIRING_MODE)
+                struct ble_store_key_sec key_sec;
+                struct ble_store_value_sec sec;
+
+                memset(&key_sec, 0, sizeof(key_sec));
+                memcpy(key_sec.peer_addr.val, desc.peer_id_addr.val, 6);
+                key_sec.peer_addr.type = desc.peer_id_addr.type;
+
+                // Try to read stored security info (bond)
+                rc = ble_store_read_peer_sec(&key_sec, &sec);
+                if (rc == 0)
                 {
-                    ESP_LOGI(TAG, "In pairing mode, initiating pairing/encryption...");
-                    rc = ble_gap_security_initiate(event->connect.conn_handle);
-                    if (rc != 0)
-                    {
-                        ESP_LOGE(TAG, "Failed to initiate security: %d", rc);
-                    }
-                }
-                else
-                {
-                    ESP_LOGI(TAG, "Not in pairing mode, rejecting unpaired device");
-                    ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                    is_bonded = true;
+                    ESP_LOGI(TAG, "Found stored bond information for peer");
                 }
             }
+
+            // Security disabled - allow all connections without pairing
+            ESP_LOGI(TAG, "Connection accepted - security disabled, no pairing required");
 
             struct ble_gap_upd_params params = {.itvl_min = desc.conn_itvl,
                                                 .itvl_max = desc.conn_itvl,
@@ -222,7 +252,6 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
             if (passkey_conn_handle == event->connect.conn_handle)
             {
-                event_manager_clear_bits(EVENT_BIT_PASSKEY_DISPLAY);
                 passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
                 current_passkey = 0;
             }
@@ -234,6 +263,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         return rc;
 
     case BLE_GAP_EVENT_PASSKEY_ACTION:
+        ESP_LOGI(TAG, "PASSKEY_ACTION event received: conn_handle=%d, action=%d",
+                 event->passkey.conn_handle, event->passkey.params.action);
         rc = ble_gap_passkey_action_cb(event, NULL);
         return rc;
 
@@ -245,18 +276,40 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             if (event->enc_change.status == 0 && desc.sec_state.encrypted)
             {
                 ESP_LOGI(TAG, "Connection successfully encrypted and authenticated");
+                ESP_LOGI(TAG, "Security state: encrypted=%d, authenticated=%d, bonded=%d",
+                         desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
                 if (passkey_conn_handle == event->enc_change.conn_handle)
                 {
-                    event_manager_clear_bits(EVENT_BIT_PASSKEY_DISPLAY);
                     passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
                     current_passkey = 0;
                 }
+
+                bool pairing_mode = (event_manager_get_bits() & EVENT_BIT_PAIRING_MODE) != 0;
+
                 // If in pairing mode and encryption successful, device is now paired
-                if (event_manager_get_bits() & EVENT_BIT_PAIRING_MODE)
+                if (pairing_mode)
                 {
                     // Device successfully paired - set connected bit so pairing task can continue
                     ESP_LOGI(TAG, "Device successfully paired in pairing mode");
+                    if (desc.sec_state.bonded)
+                    {
+                        ESP_LOGI(TAG, "Device is now bonded and will be saved to NVS");
+                    }
+                    else
+                    {
+                        ESP_LOGW(TAG, "Warning: Device paired but bond state is not set!");
+                    }
                     event_manager_set_bits(EVENT_BIT_PAIRING_SUCCESS);
+                }
+                else
+                {
+                    // Encryption successful - device is connected (bonded or using stored keys)
+                    ESP_LOGI(TAG, "Device connected with encryption");
+                    if (desc.sec_state.bonded)
+                    {
+                        ESP_LOGI(TAG, "Bonded device reconnected");
+                    }
+                    event_manager_set_bits(EVENT_BIT_BLE_CONNECTED);
                 }
             }
             else if (event->enc_change.status != 0)
@@ -272,7 +325,6 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
         if (passkey_conn_handle != BLE_HS_CONN_HANDLE_NONE)
         {
-            event_manager_clear_bits(EVENT_BIT_PASSKEY_DISPLAY);
             passkey_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             current_passkey = 0;
         }
@@ -309,6 +361,24 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "MTU exchange complete: conn_handle=%d, mtu=%d",
                  event->mtu.conn_handle, event->mtu.value);
         return rc;
+
+    case BLE_GAP_EVENT_SUBSCRIBE:
+    {
+        uint16_t attr_handle = event->subscribe.attr_handle;
+        if (event->subscribe.cur_notify || event->subscribe.cur_indicate)
+        {
+            ESP_LOGI(TAG, "✓ Client SUBSCRIBED: conn_handle=%d, attr_handle=%d, reason=%d (notify=%s, indicate=%s)",
+                     event->subscribe.conn_handle, attr_handle, event->subscribe.reason,
+                     event->subscribe.cur_notify ? "YES" : "NO",
+                     event->subscribe.cur_indicate ? "YES" : "NO");
+        }
+        else
+        {
+            ESP_LOGI(TAG, "✗ Client UNSUBSCRIBED: conn_handle=%d, attr_handle=%d, reason=%d",
+                     event->subscribe.conn_handle, attr_handle, event->subscribe.reason);
+        }
+        return rc;
+    }
     }
 
     return rc;
@@ -318,6 +388,42 @@ void adv_init(void)
 {
     int rc = 0;
     char addr_str[18] = {0};
+    uint8_t base_mac[6] = {0};
+
+    // Get the embedded MAC address from eFuse (base MAC)
+    esp_err_t err = esp_read_mac(base_mac, ESP_MAC_BASE);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to read base MAC address: %s", esp_err_to_name(err));
+        // Fallback to BLE address
+        rc = ble_hs_util_ensure_addr(0);
+        if (rc != 0)
+        {
+            ESP_LOGE(TAG, "device does not have any available bt address!");
+            return;
+        }
+        rc = ble_hs_id_infer_auto(0, &own_addr_type);
+        if (rc != 0)
+        {
+            ESP_LOGE(TAG, "failed to infer address type, error code: %d", rc);
+            return;
+        }
+        rc = ble_hs_id_copy_addr(own_addr_type, addr_val, NULL);
+        if (rc != 0)
+        {
+            ESP_LOGE(TAG, "failed to copy device address, error code: %d", rc);
+            return;
+        }
+        format_addr(addr_str, addr_val);
+        ESP_LOGI(TAG, "device address (BLE): %s", addr_str);
+    }
+    else
+    {
+        // Use the embedded MAC address
+        memcpy(addr_val, base_mac, 6);
+        format_addr(addr_str, base_mac);
+        ESP_LOGI(TAG, "device address (embedded MAC): %s", addr_str);
+    }
 
     rc = ble_hs_util_ensure_addr(0);
     if (rc != 0)
@@ -333,15 +439,6 @@ void adv_init(void)
         return;
     }
 
-    rc = ble_hs_id_copy_addr(own_addr_type, addr_val, NULL);
-    if (rc != 0)
-    {
-        ESP_LOGE(TAG, "failed to copy device address, error code: %d", rc);
-        return;
-    }
-    format_addr(addr_str, addr_val);
-    ESP_LOGI(TAG, "device address: %s", addr_str);
-
     start_advertising();
 }
 
@@ -353,12 +450,16 @@ int gap_init(void)
 
     rc = ble_svc_gap_device_name_set(DEVICE_NAME);
 
-    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_DISP_ONLY; // Display only - show passkey
-    ble_hs_cfg.sm_bonding = 1;                      // Enable bonding
-    ble_hs_cfg.sm_mitm = 1;                         // Require MITM protection (passkey)
-    ble_hs_cfg.sm_sc = 0;                           // Legacy pairing (not secure connections)
-    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    // Disable security - allow anyone to connect without pairing
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+    ble_hs_cfg.sm_bonding = 0; // Disable bonding
+    ble_hs_cfg.sm_mitm = 0;    // Disable MITM protection (no passkey required)
+    ble_hs_cfg.sm_sc = 0;      // Legacy pairing (not secure connections)
+    ble_hs_cfg.sm_our_key_dist = 0;
+    ble_hs_cfg.sm_their_key_dist = 0;
+
+    ESP_LOGI(TAG, "Security manager configured: io_cap=%d, bonding=%d, mitm=%d, sc=%d",
+             ble_hs_cfg.sm_io_cap, ble_hs_cfg.sm_bonding, ble_hs_cfg.sm_mitm, ble_hs_cfg.sm_sc);
 
     return rc;
 }

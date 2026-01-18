@@ -5,10 +5,18 @@
 #include "host/ble_uuid.h"
 #include "event_manager.h"
 #include "hardware/hardware_manager.h"
+#include "utils/nvs_utils.h"
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 static const char *TAG = "command_svc";
+
+// Static variable to store firmware URL received via characteristic write
+static char s_firmware_url[2048] = {0};
+static size_t s_firmware_url_len = 0;
+static const ble_uuid_t *s_current_firmware_write_uuid = NULL;
+static bool s_firmware_ota_triggered = false;
 
 // Characteristic UUIDs
 static const ble_uuid128_t COMMAND_SVC_UUID = BLE_UUID128_INIT(0xc0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
@@ -18,6 +26,7 @@ static const ble_uuid128_t FORCE_PH_CHR_UUID = BLE_UUID128_INIT(0xc3, 0xde, 0xbc
 static const ble_uuid128_t TEMP_INTERVAL_CHR_UUID = BLE_UUID128_INIT(0xc4, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 static const ble_uuid128_t FEED_INTERVAL_CHR_UUID = BLE_UUID128_INIT(0xc5, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 static const ble_uuid128_t PUBLISH_INTERVAL_CHR_UUID = BLE_UUID128_INIT(0xc6, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+static const ble_uuid128_t FIRMWARE_CHR_UUID = BLE_UUID128_INIT(0xc7, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 
 static int command_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg);
@@ -119,6 +128,21 @@ static const struct ble_gatt_svc_def command_svc_defs[] = {
                     {0},
                 },
             },
+            {
+                .uuid = &FIRMWARE_CHR_UUID.u,
+                .access_cb = command_access_cb,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .min_key_size = 16,
+                .descriptors = (struct ble_gatt_dsc_def[]){
+                    {
+                        .uuid = BLE_UUID16_DECLARE(0x2901),
+                        .att_flags = BLE_ATT_F_READ,
+                        .access_cb = command_desc_cb,
+                        .arg = "Firmware Update",
+                    },
+                    {0},
+                },
+            },
             {0},
         },
     },
@@ -186,6 +210,25 @@ static int command_access_cb(uint16_t conn_handle, uint16_t attr_handle,
             // Return current publish interval
             uint32_t interval = event_manager_get_publish_interval();
             rc = os_mbuf_append(ctxt->om, &interval, sizeof(interval));
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+        else if (ble_uuid_cmp(uuid, &FIRMWARE_CHR_UUID.u) == 0)
+        {
+            // Load firmware version from NVS, default to "1.0.0" if not found
+            char version[32] = "1.0.0";
+            size_t version_size = sizeof(version);
+            esp_err_t err = nvs_load_blob("firmware", "version", version, &version_size);
+            if (err != ESP_OK)
+            {
+                // Use default "1.0.0" if not found in NVS
+                strcpy(version, "1.0.0");
+            }
+            else
+            {
+                // Ensure null termination
+                version[sizeof(version) - 1] = '\0';
+            }
+            rc = os_mbuf_append(ctxt->om, version, strlen(version));
             return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
     }
@@ -273,6 +316,56 @@ static int command_access_cb(uint16_t conn_handle, uint16_t attr_handle,
             }
             return 0;
         }
+        else if (ble_uuid_cmp(uuid, &FIRMWARE_CHR_UUID.u) == 0)
+        {
+            uint8_t url_buf[512];
+            int url_len = OS_MBUF_PKTLEN(om);
+
+            if (url_len >= (int)sizeof(url_buf))
+            {
+                url_len = sizeof(url_buf) - 1;
+            }
+
+            ble_hs_mbuf_to_flat(om, url_buf, url_len, NULL);
+
+            if (s_current_firmware_write_uuid != NULL && s_current_firmware_write_uuid != uuid)
+            {
+                s_firmware_url_len = 0;
+                memset(s_firmware_url, 0, sizeof(s_firmware_url));
+                s_current_firmware_write_uuid = uuid;
+                s_firmware_ota_triggered = false;
+            }
+            else if (s_current_firmware_write_uuid == NULL)
+            {
+                s_firmware_url_len = 0;
+                memset(s_firmware_url, 0, sizeof(s_firmware_url));
+                s_current_firmware_write_uuid = uuid;
+                s_firmware_ota_triggered = false;
+            }
+
+            if (url_len == 0 || (url_len == 1 && url_buf[0] == 0x00))
+            {
+                if (s_firmware_url_len > 0 && !s_firmware_ota_triggered)
+                {
+                    ESP_LOGI(TAG, "Firmware URL complete");
+                    event_manager_set_bits(EVENT_BIT_OTA_UPDATE);
+                    s_firmware_ota_triggered = true;
+                    s_current_firmware_write_uuid = NULL; // Reset for next write sequence
+                }
+                return 0;
+            }
+
+            size_t remaining = sizeof(s_firmware_url) - 1 - s_firmware_url_len;
+            size_t copy_len = url_len < remaining ? (size_t)url_len : remaining;
+            if (copy_len > 0)
+            {
+                memcpy(s_firmware_url + s_firmware_url_len, url_buf, copy_len);
+                s_firmware_url_len += copy_len;
+                s_firmware_url[s_firmware_url_len] = '\0';
+                ESP_LOGI(TAG, "Firmware URL chunk received");
+            }
+            return 0;
+        }
     }
 
     return BLE_ATT_ERR_UNLIKELY;
@@ -281,4 +374,9 @@ static int command_access_cb(uint16_t conn_handle, uint16_t attr_handle,
 const struct ble_gatt_svc_def *command_service_get_svc_def(void)
 {
     return command_svc_defs;
+}
+
+const char *command_service_get_firmware_url(void)
+{
+    return s_firmware_url;
 }

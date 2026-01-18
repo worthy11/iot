@@ -967,6 +967,7 @@ static void action_pairing_mode(void)
     {
         ESP_LOGI(TAG, "Turning on pairing mode");
         event_manager_set_bits(EVENT_BIT_PAIRING_MODE);
+        event_manager_set_bits(EVENT_BIT_BLE_ADVERTISING);
         display_pairing_mode();
     }
 }

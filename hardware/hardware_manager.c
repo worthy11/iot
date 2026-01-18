@@ -69,6 +69,7 @@ float hardware_manager_measure_temp(void)
 {
     float temp_sum = 0.0f;
     int valid_readings = 0;
+    bool connected = (event_manager_get_bits() & EVENT_BIT_BLE_CONNECTED) || (event_manager_get_bits() & EVENT_BIT_WIFI_STATUS);
 
     for (int i = 0; i < NUM_READINGS; i++)
     {
@@ -93,10 +94,18 @@ float hardware_manager_measure_temp(void)
 
         if (i < NUM_READINGS - 1)
         {
-            esp_sleep_enable_timer_wakeup(TEMP_INTERVAL_MS * 1000);
-            ESP_LOGI(TAG, "Entering light sleep for %d milliseconds", TEMP_INTERVAL_MS);
-            esp_light_sleep_start();
-            ESP_LOGI(TAG, "Exited light sleep");
+            if (connected)
+            {
+                ESP_LOGD(TAG, "Skipping light sleep");
+                vTaskDelay(pdMS_TO_TICKS(TEMP_INTERVAL_MS));
+            }
+            else
+            {
+                esp_sleep_enable_timer_wakeup(TEMP_INTERVAL_MS * 1000);
+                ESP_LOGI(TAG, "Entering light sleep for %d milliseconds", TEMP_INTERVAL_MS);
+                esp_light_sleep_start();
+                ESP_LOGI(TAG, "Exited light sleep");
+            }
         }
     }
 
@@ -122,6 +131,7 @@ float hardware_manager_measure_ph(void)
 
     float ph_sum = 0.0f;
     int valid_readings = 0;
+    bool connected = (event_manager_get_bits() & EVENT_BIT_BLE_CONNECTED) || (event_manager_get_bits() & EVENT_BIT_WIFI_STATUS);
 
     for (int i = 0; i < NUM_READINGS; i++)
     {
@@ -139,10 +149,18 @@ float hardware_manager_measure_ph(void)
 
         if (i < NUM_READINGS - 1)
         {
-            esp_sleep_enable_timer_wakeup(PH_INTERVAL_MS * 1000);
-            ESP_LOGI(TAG, "Entering light sleep for %d milliseconds", PH_INTERVAL_MS);
-            esp_light_sleep_start();
-            ESP_LOGI(TAG, "Exited light sleep");
+            if (connected)
+            {
+                ESP_LOGD(TAG, "Skipping light sleep");
+                vTaskDelay(pdMS_TO_TICKS(PH_INTERVAL_MS));
+            }
+            else
+            {
+                esp_sleep_enable_timer_wakeup(PH_INTERVAL_MS * 1000);
+                ESP_LOGI(TAG, "Entering light sleep for %d milliseconds", PH_INTERVAL_MS);
+                esp_light_sleep_start();
+                ESP_LOGI(TAG, "Exited light sleep");
+            }
         }
     }
 
@@ -165,7 +183,6 @@ float hardware_manager_measure_ph(void)
 
 bool hardware_manager_feed(void)
 {
-    // Power on the break beam sensor before starting the task
     break_beam_power_on();
 
     TaskHandle_t beam_task_handle = NULL;

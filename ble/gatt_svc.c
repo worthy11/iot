@@ -5,6 +5,7 @@
 #include "provisioning_service.h"
 #include "telemetry_service.h"
 #include "command_service.h"
+#include "esp_log.h"
 
 static const char *TAG = "GATT_SVC";
 
@@ -37,6 +38,13 @@ static void build_combined_svc_def(void)
     gatt_svr_svcs[gatt_svr_svcs_count].type = 0;
 }
 
+void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg)
+{
+    (void)ctxt;
+    (void)arg;
+    // Registration callback - no logging needed
+}
+
 int gatt_svc_init(void)
 {
     int rc;
@@ -59,5 +67,6 @@ int gatt_svc_init(void)
     }
 
     ESP_LOGI(TAG, "GATT server initialized with %d services", gatt_svr_svcs_count);
+
     return 0;
 }

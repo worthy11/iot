@@ -28,17 +28,38 @@ static void IRAM_ATTR beam_isr(void *arg)
     }
 }
 
+static void break_beam_clear_queue(void)
+{
+    if (gpio_evt_queue == NULL || beam_gpio == GPIO_NUM_NC)
+    {
+        return;
+    }
+
+    // Disable GPIO interrupts while clearing the queue
+    gpio_isr_handler_remove(beam_gpio);
+
+    uint32_t io_level;
+    // Clear all pending items from the queue
+    while (xQueueReceive(gpio_evt_queue, &io_level, 0) == pdTRUE)
+    {
+        // Discard all items
+    }
+
+    // Re-enable GPIO interrupts
+    esp_err_t ret = gpio_isr_handler_add(beam_gpio, beam_isr, NULL);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to re-add ISR handler for GPIO %d: %s", (int)beam_gpio, esp_err_to_name(ret));
+    }
+}
+
 void break_beam_monitor(void *pvParameters)
 {
     TaskHandle_t *task_handle = (TaskHandle_t *)pvParameters;
     uint32_t io_level;
 
-    if (gpio_evt_queue != NULL)
-    {
-        while (xQueueReceive(gpio_evt_queue, &io_level, 0) == pdTRUE)
-        {
-        }
-    }
+    // Clear any stale data from the queue before starting monitoring
+    break_beam_clear_queue();
 
     while (1)
     {
@@ -57,6 +78,9 @@ void break_beam_monitor(void *pvParameters)
 
 void break_beam_power_on(void)
 {
+    // Clear queue before powering on to remove any stale data
+    break_beam_clear_queue();
+
     if (beam_power_gpio != GPIO_NUM_NC)
     {
         gpio_set_level(beam_power_gpio, 1);

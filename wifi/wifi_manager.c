@@ -50,16 +50,25 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
-        esp_wifi_connect();
-        ESP_LOGI(TAG, "WiFi started. Connecting...");
+        // Only attempt connection if credentials are loaded
+        if (current_cfg.ssid[0] != '\0')
+        {
+            esp_wifi_connect();
+            ESP_LOGI(TAG, "WiFi started. Connecting...");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "WiFi started but no credentials loaded, cannot connect");
+        }
     }
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
         wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
-        ESP_LOGI(TAG, "Disconnected from the AP (reason: %d). Retrying with credentials: %s %s",
-                 disconn->reason, current_cfg.ssid, current_cfg.password);
+        ESP_LOGI(TAG, "Disconnected from the AP (reason: %d). Retrying...", disconn->reason);
 
         event_manager_clear_bits(EVENT_BIT_WIFI_STATUS);
+
+        // Always retry connection after disconnection
         vTaskDelay(pdMS_TO_TICKS(1000));
         esp_wifi_connect();
     }
@@ -73,6 +82,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
 esp_err_t wifi_manager_start(void)
 {
+    // Load WiFi credentials on every start
+    wifi_manager_load_config();
+
     esp_err_t err = esp_wifi_start();
     if (err == ESP_OK)
     {
@@ -99,6 +111,8 @@ esp_err_t wifi_manager_start(void)
 
 void wifi_manager_stop(void)
 {
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(500));
     esp_wifi_stop();
 }
 
@@ -119,10 +133,16 @@ esp_err_t wifi_manager_load_config(void)
 
     if (err != ESP_OK)
     {
-        ESP_LOGW(TAG, "Failed to load WiFi credentials from NVS: %s", esp_err_to_name(err));
+        // Only warn if it's an actual error, not just "not found" (expected before provisioning)
+        if (err != ESP_ERR_NVS_NOT_FOUND)
+        {
+            ESP_LOGW(TAG, "Failed to load WiFi credentials from NVS: %s", esp_err_to_name(err));
+        }
+        // Don't clear current_cfg if load fails - keep existing config
         return err;
     }
 
+    // Update current config
     current_cfg = cfg;
 
     wifi_config_t wifi_config = {

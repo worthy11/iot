@@ -5,14 +5,19 @@
 #include <math.h>
 
 #include "ble/ble_manager.h"
+#include "ble/command_service.h"
 #include "wifi/wifi_manager.h"
 #include "mqtt/mqtt_manager.h"
+#include "mqtt/http_manager.h"
 #include "hardware/hardware_manager.h"
+#include "hardware/display/display_driver.h"
 #include "utils/nvs_utils.h"
+#include "utils/fs_utils.h"
 #include "esp_sleep.h"
 #include "freertos/semphr.h"
+#include "esp_system.h"
 
-#define GATT_SERVER_TIMEOUT_MS (10 * 1000)
+#define GATT_SERVER_TIMEOUT_MS (10 * 60 * 1000)
 #define PAIRING_TIMEOUT_MS (5 * 60 * 1000)
 #define ADVERTISING_INTERVAL_MS (60 * 1000)
 #define PH_CONFIRMATION_TIMEOUT_MS (30 * 1000)
@@ -159,6 +164,20 @@ static void load_intervals(void)
         ESP_LOGW(TAG, "Failed to load last_feed_time: %s", esp_err_to_name(err));
         g_last_feed_time = 0;
     }
+    else if (size != sizeof(time_t))
+    {
+        ESP_LOGW(TAG, "last_feed_time size mismatch: expected %zu, got %zu. Resetting to 0", sizeof(time_t), size);
+        g_last_feed_time = 0;
+        // Clear the corrupted value
+        nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_feed", &g_last_feed_time, sizeof(time_t));
+    }
+    else if (g_last_feed_time > 0 && g_last_feed_time < 946684800) // Year 2000 timestamp - invalid if before this (but 0 is valid)
+    {
+        ESP_LOGW(TAG, "last_feed_time is invalid (too old): %ld. Resetting to 0", (long)g_last_feed_time);
+        g_last_feed_time = 0;
+        // Clear the invalid value
+        nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_feed", &g_last_feed_time, sizeof(time_t));
+    }
 
     size = sizeof(time_t);
     err = nvs_load_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_temp", &g_last_temp_measurement_time, &size);
@@ -166,6 +185,20 @@ static void load_intervals(void)
     {
         ESP_LOGW(TAG, "Failed to load last_temp_time: %s", esp_err_to_name(err));
         g_last_temp_measurement_time = 0;
+    }
+    else if (size != sizeof(time_t))
+    {
+        ESP_LOGW(TAG, "last_temp_time size mismatch: expected %zu, got %zu. Resetting to 0", sizeof(time_t), size);
+        g_last_temp_measurement_time = 0;
+        // Clear the corrupted value
+        nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_temp", &g_last_temp_measurement_time, sizeof(time_t));
+    }
+    else if (g_last_temp_measurement_time > 0 && g_last_temp_measurement_time < 946684800) // Year 2000 timestamp - invalid if before this (but 0 is valid)
+    {
+        ESP_LOGW(TAG, "last_temp_time is invalid (too old): %ld. Resetting to 0", (long)g_last_temp_measurement_time);
+        g_last_temp_measurement_time = 0;
+        // Clear the invalid value
+        nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_temp", &g_last_temp_measurement_time, sizeof(time_t));
     }
 
     size = sizeof(uint32_t);
@@ -182,6 +215,20 @@ static void load_intervals(void)
     {
         ESP_LOGW(TAG, "Failed to load last_publish_time: %s", esp_err_to_name(err));
         g_last_publish_time = 0;
+    }
+    else if (size != sizeof(time_t))
+    {
+        ESP_LOGW(TAG, "last_publish_time size mismatch: expected %zu, got %zu. Resetting to 0", sizeof(time_t), size);
+        g_last_publish_time = 0;
+        // Clear the corrupted value
+        nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_publish", &g_last_publish_time, sizeof(time_t));
+    }
+    else if (g_last_publish_time > 0 && g_last_publish_time < 946684800) // Year 2000 timestamp - invalid if before this (but 0 is valid)
+    {
+        ESP_LOGW(TAG, "last_publish_time is invalid (too old): %ld. Resetting to 0", (long)g_last_publish_time);
+        g_last_publish_time = 0;
+        // Clear the invalid value
+        nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_publish", &g_last_publish_time, sizeof(time_t));
     }
 
     ESP_LOGI(TAG, "Intervals and times loaded from NVS: temp_interval=%lu, feed_interval=%lu, publish_interval=%lu, last_feed=%ld, last_temp=%ld, last_publish=%ld",
@@ -303,10 +350,37 @@ void event_manager_set_feeding_interval(uint32_t feed_interval_seconds)
     }
     else
     {
-        TickType_t period_ticks = pdMS_TO_TICKS(feed_interval_seconds * 1000);
-        xTimerChangePeriod(feeding_timer, period_ticks, portMAX_DELAY);
-        xTimerStart(feeding_timer, portMAX_DELAY);
-        ESP_LOGI(TAG, "Feeding timer set to %lu seconds (auto-reload)", (unsigned long)feed_interval_seconds);
+        time_t current_time = time(NULL);
+        if (g_last_feed_time > 0 && current_time > 1000000000) // Valid system time and last feed time
+        {
+            time_t elapsed = current_time - g_last_feed_time;
+            if (elapsed < (time_t)feed_interval_seconds)
+            {
+                // Calculate remaining time until next feed
+                uint32_t remaining_sec = feed_interval_seconds - (uint32_t)elapsed;
+                ESP_LOGI(TAG, "Setting feed timer to remaining time: %lu seconds", (unsigned long)remaining_sec);
+                TickType_t period_ticks = pdMS_TO_TICKS(remaining_sec * 1000);
+                xTimerChangePeriod(feeding_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(feeding_timer, portMAX_DELAY);
+            }
+            else
+            {
+                // Interval has already passed, trigger immediately
+                ESP_LOGI(TAG, "Feed interval already passed, triggering immediately");
+                TickType_t period_ticks = pdMS_TO_TICKS(feed_interval_seconds * 1000);
+                xTimerChangePeriod(feeding_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(feeding_timer, portMAX_DELAY);
+                event_manager_set_bits(EVENT_BIT_FEED_SCHEDULED);
+            }
+        }
+        else
+        {
+            // No previous feed or invalid time, set full interval
+            TickType_t period_ticks = pdMS_TO_TICKS(feed_interval_seconds * 1000);
+            xTimerChangePeriod(feeding_timer, period_ticks, portMAX_DELAY);
+            xTimerStart(feeding_timer, portMAX_DELAY);
+            ESP_LOGI(TAG, "Feeding timer set to %lu seconds (auto-reload)", (unsigned long)feed_interval_seconds);
+        }
     }
 }
 
@@ -328,10 +402,37 @@ void event_manager_set_temp_reading_interval(uint32_t temp_interval_seconds)
     }
     else
     {
-        TickType_t period_ticks = pdMS_TO_TICKS(temp_interval_seconds * 1000);
-        xTimerChangePeriod(temp_reading_timer, period_ticks, portMAX_DELAY);
-        xTimerStart(temp_reading_timer, portMAX_DELAY);
-        ESP_LOGI(TAG, "Temperature reading timer set to %lu seconds (auto-reload)", (unsigned long)temp_interval_seconds);
+        time_t current_time = time(NULL);
+        if (g_last_temp_measurement_time > 0 && current_time > 1000000000) // Valid system time and last temp time
+        {
+            time_t elapsed = current_time - g_last_temp_measurement_time;
+            if (elapsed < (time_t)temp_interval_seconds)
+            {
+                // Calculate remaining time until next reading
+                uint32_t remaining_sec = temp_interval_seconds - (uint32_t)elapsed;
+                ESP_LOGI(TAG, "Setting temp timer to remaining time: %lu seconds", (unsigned long)remaining_sec);
+                TickType_t period_ticks = pdMS_TO_TICKS(remaining_sec * 1000);
+                xTimerChangePeriod(temp_reading_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(temp_reading_timer, portMAX_DELAY);
+            }
+            else
+            {
+                // Interval has already passed, trigger immediately
+                ESP_LOGI(TAG, "Temp interval already passed, triggering immediately");
+                TickType_t period_ticks = pdMS_TO_TICKS(temp_interval_seconds * 1000);
+                xTimerChangePeriod(temp_reading_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(temp_reading_timer, portMAX_DELAY);
+                event_manager_set_bits(EVENT_BIT_TEMP_SCHEDULED);
+            }
+        }
+        else
+        {
+            // No previous measurement or invalid time, set full interval
+            TickType_t period_ticks = pdMS_TO_TICKS(temp_interval_seconds * 1000);
+            xTimerChangePeriod(temp_reading_timer, period_ticks, portMAX_DELAY);
+            xTimerStart(temp_reading_timer, portMAX_DELAY);
+            ESP_LOGI(TAG, "Temperature reading timer set to %lu seconds (auto-reload)", (unsigned long)temp_interval_seconds);
+        }
     }
 }
 
@@ -353,10 +454,37 @@ void event_manager_set_publish_interval(int publish_frequency)
     }
     else
     {
-        TickType_t period_ticks = pdMS_TO_TICKS(publish_interval_sec * 1000);
-        xTimerChangePeriod(publish_timer, period_ticks, portMAX_DELAY);
-        xTimerStart(publish_timer, portMAX_DELAY);
-        ESP_LOGI(TAG, "Publish timer set to %lu seconds (auto-reload)", (unsigned long)publish_interval_sec);
+        time_t current_time = time(NULL);
+        if (g_last_publish_time > 0 && current_time > 1000000000) // Valid system time and last publish time
+        {
+            time_t elapsed = current_time - g_last_publish_time;
+            if (elapsed < (time_t)publish_interval_sec)
+            {
+                // Calculate remaining time until next publish
+                uint32_t remaining_sec = publish_interval_sec - (uint32_t)elapsed;
+                ESP_LOGI(TAG, "Setting publish timer to remaining time: %lu seconds", (unsigned long)remaining_sec);
+                TickType_t period_ticks = pdMS_TO_TICKS(remaining_sec * 1000);
+                xTimerChangePeriod(publish_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(publish_timer, portMAX_DELAY);
+            }
+            else
+            {
+                // Interval has already passed, trigger immediately
+                ESP_LOGI(TAG, "Publish interval already passed, triggering immediately");
+                TickType_t period_ticks = pdMS_TO_TICKS(publish_interval_sec * 1000);
+                xTimerChangePeriod(publish_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(publish_timer, portMAX_DELAY);
+                event_manager_set_bits(EVENT_BIT_PUBLISH_SCHEDULED);
+            }
+        }
+        else
+        {
+            // No previous publish or invalid time, set full interval
+            TickType_t period_ticks = pdMS_TO_TICKS(publish_interval_sec * 1000);
+            xTimerChangePeriod(publish_timer, period_ticks, portMAX_DELAY);
+            xTimerStart(publish_timer, portMAX_DELAY);
+            ESP_LOGI(TAG, "Publish timer set to %lu seconds (auto-reload)", (unsigned long)publish_interval_sec);
+        }
     }
 }
 
@@ -382,15 +510,10 @@ uint32_t event_manager_get_temp_timer_remaining_sec(void)
         return 0;
     }
 
-    time_t current_time = time(NULL);
-    if (current_time < 1000000000)
+    // Always use the actual timer expiry time when timer is active
+    // This ensures the reported remaining time matches what the timer actually has
+    if (xTimerIsTimerActive(temp_reading_timer) == pdTRUE)
     {
-        // Invalid system time, fall back to timer
-        if (xTimerIsTimerActive(temp_reading_timer) == pdFALSE)
-        {
-            return 0;
-        }
-
         TickType_t expiry_time = xTimerGetExpiryTime(temp_reading_timer);
         TickType_t current_ticks = xTaskGetTickCount();
 
@@ -408,42 +531,18 @@ uint32_t event_manager_get_temp_timer_remaining_sec(void)
         return remaining_ms / 1000;
     }
 
-    // Calculate based on last measurement time
-    if (g_last_temp_measurement_time > 0)
+    // Timer not active, calculate based on last measurement time as fallback
+    time_t current_time = time(NULL);
+    if (current_time >= 1000000000 && g_last_temp_measurement_time > 0)
     {
         time_t elapsed = current_time - g_last_temp_measurement_time;
         if (elapsed < (time_t)g_temp_reading_interval_sec)
         {
             return g_temp_reading_interval_sec - (uint32_t)elapsed;
         }
-        else
-        {
-            // Interval has already passed
-            return 0;
-        }
     }
 
-    // No last measurement time, check timer
-    if (xTimerIsTimerActive(temp_reading_timer) == pdFALSE)
-    {
-        return 0;
-    }
-
-    TickType_t expiry_time = xTimerGetExpiryTime(temp_reading_timer);
-    TickType_t current_ticks = xTaskGetTickCount();
-
-    TickType_t remaining_ticks;
-    if (expiry_time > current_ticks)
-    {
-        remaining_ticks = expiry_time - current_ticks;
-    }
-    else
-    {
-        return 0;
-    }
-
-    uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
-    return remaining_ms / 1000;
+    return 0;
 }
 
 uint32_t event_manager_get_feed_timer_remaining_sec(void)
@@ -453,15 +552,10 @@ uint32_t event_manager_get_feed_timer_remaining_sec(void)
         return 0;
     }
 
-    time_t current_time = time(NULL);
-    if (current_time < 1000000000)
+    // Always use the actual timer expiry time when timer is active
+    // This ensures the reported remaining time matches what the timer actually has
+    if (xTimerIsTimerActive(feeding_timer) == pdTRUE)
     {
-        // Invalid system time, fall back to timer
-        if (xTimerIsTimerActive(feeding_timer) == pdFALSE)
-        {
-            return 0;
-        }
-
         TickType_t expiry_time = xTimerGetExpiryTime(feeding_timer);
         TickType_t current_ticks = xTaskGetTickCount();
 
@@ -479,42 +573,18 @@ uint32_t event_manager_get_feed_timer_remaining_sec(void)
         return remaining_ms / 1000;
     }
 
-    // Calculate based on last feed time
-    if (g_last_feed_time > 0)
+    // Timer not active, calculate based on last feed time as fallback
+    time_t current_time = time(NULL);
+    if (current_time >= 1000000000 && g_last_feed_time > 0)
     {
         time_t elapsed = current_time - g_last_feed_time;
         if (elapsed < (time_t)g_feeding_interval_sec)
         {
             return g_feeding_interval_sec - (uint32_t)elapsed;
         }
-        else
-        {
-            // Interval has already passed
-            return 0;
-        }
     }
 
-    // No last feed time, check timer
-    if (xTimerIsTimerActive(feeding_timer) == pdFALSE)
-    {
-        return 0;
-    }
-
-    TickType_t expiry_time = xTimerGetExpiryTime(feeding_timer);
-    TickType_t current_ticks = xTaskGetTickCount();
-
-    TickType_t remaining_ticks;
-    if (expiry_time > current_ticks)
-    {
-        remaining_ticks = expiry_time - current_ticks;
-    }
-    else
-    {
-        return 0;
-    }
-
-    uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
-    return remaining_ms / 1000;
+    return 0;
 }
 
 static uint32_t get_publish_timer_remaining_sec(void)
@@ -524,15 +594,10 @@ static uint32_t get_publish_timer_remaining_sec(void)
         return 0;
     }
 
-    time_t current_time = time(NULL);
-    if (current_time < 1000000000)
+    // Always use the actual timer expiry time when timer is active
+    // This ensures the reported remaining time matches what the timer actually has
+    if (xTimerIsTimerActive(publish_timer) == pdTRUE)
     {
-        // Invalid system time, fall back to timer
-        if (xTimerIsTimerActive(publish_timer) == pdFALSE)
-        {
-            return 0;
-        }
-
         TickType_t expiry_time = xTimerGetExpiryTime(publish_timer);
         TickType_t current_ticks = xTaskGetTickCount();
 
@@ -550,42 +615,18 @@ static uint32_t get_publish_timer_remaining_sec(void)
         return remaining_ms / 1000;
     }
 
-    // Calculate based on last publish time
-    if (g_last_publish_time > 0)
+    // Timer not active, calculate based on last publish time as fallback
+    time_t current_time = time(NULL);
+    if (current_time >= 1000000000 && g_last_publish_time > 0)
     {
         time_t elapsed = current_time - g_last_publish_time;
         if (elapsed < (time_t)publish_interval_sec)
         {
             return publish_interval_sec - (uint32_t)elapsed;
         }
-        else
-        {
-            // Interval has already passed
-            return 0;
-        }
     }
 
-    // No last publish time, check timer
-    if (xTimerIsTimerActive(publish_timer) == pdFALSE)
-    {
-        return 0;
-    }
-
-    TickType_t expiry_time = xTimerGetExpiryTime(publish_timer);
-    TickType_t current_ticks = xTaskGetTickCount();
-
-    TickType_t remaining_ticks;
-    if (expiry_time > current_ticks)
-    {
-        remaining_ticks = expiry_time - current_ticks;
-    }
-    else
-    {
-        return 0;
-    }
-
-    uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
-    return remaining_ms / 1000;
+    return 0;
 }
 
 static uint32_t get_ble_timer_remaining_sec(void)
@@ -625,7 +666,7 @@ static void activity_counter_increment(void)
     if (activity_counter_mutex != NULL && xSemaphoreTake(activity_counter_mutex, portMAX_DELAY) == pdTRUE)
     {
         activity_counter++;
-        ESP_LOGD(TAG, "Activity counter incremented to %ld", (long)activity_counter);
+        ESP_LOGI(TAG, "Activity counter incremented to %ld", (long)activity_counter);
         xSemaphoreGive(activity_counter_mutex);
     }
 }
@@ -638,7 +679,7 @@ static void activity_counter_decrement(void)
         {
             activity_counter--;
         }
-        ESP_LOGD(TAG, "Activity counter decremented to %ld", (long)activity_counter);
+        ESP_LOGI(TAG, "Activity counter decremented to %ld", (long)activity_counter);
         xSemaphoreGive(activity_counter_mutex);
     }
 }
@@ -665,74 +706,115 @@ bool event_manager_is_activity_running(void)
 }
 
 // BLE task
-void event_manager_ble_task(void *pvParameters)
+void event_manager_advertising_task(void *pvParameters)
 {
     (void)pvParameters;
 
     while (1)
     {
-        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_BLE_ADVERTISING | EVENT_BIT_PAIRING_MODE, false, false, portMAX_DELAY);
-        if (bits & EVENT_BIT_BLE_ADVERTISING)
+        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_BLE_ADVERTISING, false, false, portMAX_DELAY);
+        if (bits & EVENT_BIT_BLE_ADVERTISING && !((bits & EVENT_BIT_PAIRING_MODE) || (bits & EVENT_BIT_PAIRING_SUCCESS) || (bits & EVENT_BIT_PASSKEY_DISPLAY)))
         {
             ble_start_advertising();
-            activity_counter_increment();
 
-            TaskHandle_t task_handle = xTaskGetCurrentTaskHandle();
-            event_manager_register_notification(task_handle, EVENT_BIT_BLE_CONNECTED);
-            uint32_t notif = 0;
-
-            bits = event_manager_wait_bits(EVENT_BIT_BLE_CONNECTED, false, false, pdMS_TO_TICKS(GATT_SERVER_TIMEOUT_MS));
-            if (bits & EVENT_BIT_BLE_CONNECTED)
+            bits = event_manager_wait_bits(EVENT_BIT_BLE_CONNECTED, true, false, pdMS_TO_TICKS(GATT_SERVER_TIMEOUT_MS));
+            if ((bits & EVENT_BIT_BLE_CONNECTED))
             {
-                ESP_LOGI(TAG, "Device connected");
-                bits = event_manager_wait_bits(~EVENT_BIT_BLE_CONNECTED, false, false, pdMS_TO_TICKS(GATT_SERVER_TIMEOUT_MS));
-                if (bits & ~EVENT_BIT_BLE_CONNECTED)
+                ESP_LOGI(TAG, "BLE connected");
+
+                bits = event_manager_wait_bits(EVENT_BIT_BLE_DISCONNECTED, true, false, portMAX_DELAY);
+                if (bits & EVENT_BIT_BLE_DISCONNECTED)
                 {
-                    ESP_LOGI(TAG, "Device disconnected");
+                    ESP_LOGI(TAG, "BLE disconnected");
                 }
             }
             else
             {
-                ESP_LOGI(TAG, "Device not connected, stopping advertising");
+                ESP_LOGI(TAG, "BLE connection timeout");
             }
-            ble_stop_advertising();
-            activity_counter_decrement();
-            event_manager_clear_bits(EVENT_BIT_BLE_ADVERTISING);
-            event_manager_set_bits(EVENT_BIT_DEEP_SLEEP);
-            xTimerStart(ble_timer, portMAX_DELAY);
+
+            if (!((bits & EVENT_BIT_PAIRING_MODE) || (bits & EVENT_BIT_PAIRING_SUCCESS) || (bits & EVENT_BIT_PASSKEY_DISPLAY)))
+            {
+                ble_stop_advertising();
+                xTimerReset(ble_timer, portMAX_DELAY);
+                event_manager_set_bits(EVENT_BIT_DEEP_SLEEP);
+            }
         }
-        else if (bits & EVENT_BIT_PAIRING_MODE)
+        event_manager_clear_bits(EVENT_BIT_BLE_ADVERTISING);
+    }
+}
+
+void event_manager_pairing_task(void *pvParameters)
+{
+    (void)pvParameters;
+
+    TaskHandle_t task_handle = xTaskGetCurrentTaskHandle();
+    event_manager_register_notification(task_handle, EVENT_BIT_PAIRING_MODE | EVENT_BIT_PASSKEY_DISPLAY | EVENT_BIT_PAIRING_SUCCESS | EVENT_BIT_BLE_DISCONNECTED);
+    uint32_t notif = 0;
+
+    while (1)
+    {
+        EventBits_t bits = event_manager_get_bits();
+        if (bits & EVENT_BIT_PAIRING_MODE)
         {
             ESP_LOGI(TAG, "Pairing mode active");
-            activity_counter_increment();
-            ble_start_advertising();
-            hardware_manager_display_event("pairing", NAN);
-            bits = event_manager_wait_bits(EVENT_BIT_PASSKEY_DISPLAY, false, false, pdMS_TO_TICKS(PAIRING_TIMEOUT_MS));
-            if (bits & EVENT_BIT_PASSKEY_DISPLAY)
+            if (!(bits & EVENT_BIT_BLE_ADVERTISING))
+                ble_start_advertising();
+            hardware_manager_display_event("pairing_mode_screen", NAN);
+
+            xTaskNotifyWait(0, UINT32_MAX, &notif, pdMS_TO_TICKS(PAIRING_TIMEOUT_MS));
+            event_manager_clear_bits(EVENT_BIT_PAIRING_MODE);
+            if (notif)
             {
-                ESP_LOGI(TAG, "Displaying passkey");
-                hardware_manager_display_event("passkey", event_manager_get_passkey());
-                bits = event_manager_wait_bits(EVENT_BIT_PAIRING_SUCCESS, true, false, pdMS_TO_TICKS(PAIRING_TIMEOUT_MS));
-                if (bits & EVENT_BIT_PAIRING_SUCCESS)
-                {
-                    ESP_LOGI(TAG, "Device paired successfully");
-                    event_manager_set_bits(EVENT_BIT_BLE_ADVERTISING);
-                }
-                else
-                {
-                    ESP_LOGI(TAG, "Pairing timeout");
-                }
-                event_manager_clear_bits(EVENT_BIT_PASSKEY_DISPLAY);
+                notif = 0;
+                continue;
             }
             else
             {
                 ESP_LOGI(TAG, "Pairing timeout");
             }
-            event_manager_clear_bits(EVENT_BIT_PAIRING_MODE);
+        }
+        else if (bits & EVENT_BIT_PASSKEY_DISPLAY)
+        {
+            hardware_manager_display_event("passkey", (float)event_manager_get_passkey());
+            xTaskNotifyWait(0, UINT32_MAX, &notif, pdMS_TO_TICKS(PAIRING_TIMEOUT_MS));
+            event_manager_clear_bits(EVENT_BIT_PASSKEY_DISPLAY);
+            if (notif)
+            {
+                notif = 0;
+                continue;
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Pairing timeout");
+            }
+        }
+        else if (bits & EVENT_BIT_PAIRING_SUCCESS)
+        {
+            ESP_LOGI(TAG, "Pairing successful");
+            hardware_manager_display_update();
+
+            event_manager_clear_bits(EVENT_BIT_PAIRING_SUCCESS);
+            bits = event_manager_wait_bits(EVENT_BIT_BLE_DISCONNECTED, false, false, portMAX_DELAY);
+
             ble_stop_advertising();
             activity_counter_decrement();
+            xTimerReset(ble_timer, portMAX_DELAY);
+        }
+        else if (bits & EVENT_BIT_BLE_DISCONNECTED && !((bits & EVENT_BIT_BLE_ADVERTISING)))
+        {
+            ESP_LOGI(TAG, "Pairing mode off");
+            ble_stop_advertising();
             hardware_manager_display_update();
-            vTaskDelay(pdMS_TO_TICKS(500));
+            xTaskNotifyWait(0, UINT32_MAX, &notif, portMAX_DELAY);
+            notif = 0;
+            continue;
+        }
+        else
+        {
+            xTaskNotifyWait(0, UINT32_MAX, &notif, portMAX_DELAY);
+            notif = 0;
+            continue;
         }
     }
 }
@@ -776,16 +858,24 @@ static void event_manager_action_task(void *pvParameters)
             float temp = hardware_manager_measure_temp();
             if (!isnan(temp))
             {
-                // mqtt_manager_enqueue_temperature(temp);
+                mqtt_manager_enqueue_temperature(temp);
                 ble_manager_notify_temperature(temp);
                 g_last_temp_measurement_time = time(NULL);
                 nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_temp", &g_last_temp_measurement_time, sizeof(time_t));
             }
             else
             {
-                // mqtt_manager_enqueue_log("hardware_error", "temperature_read_failed");
+                mqtt_manager_enqueue_log("hardware_error", "temperature_read_failed");
             }
             event_manager_clear_bits(EVENT_BIT_TEMP_SCHEDULED);
+
+            // Reset timer period to full interval after measurement to ensure proper auto-reload timing
+            if (temp_reading_timer != NULL && g_temp_reading_interval_sec > 0)
+            {
+                TickType_t period_ticks = pdMS_TO_TICKS(g_temp_reading_interval_sec * 1000);
+                xTimerChangePeriod(temp_reading_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(temp_reading_timer, portMAX_DELAY);
+            }
         }
 
         if (bits & EVENT_BIT_PH_SCHEDULED)
@@ -813,22 +903,24 @@ static void event_manager_action_task(void *pvParameters)
             event_manager_clear_bits(EVENT_BIT_PH_CONFIRMED);
             if (!isnan(ph_value))
             {
-                // mqtt_manager_enqueue_ph(ph_value);
+                mqtt_manager_enqueue_ph(ph_value);
                 ble_manager_notify_ph(ph_value);
             }
             else
             {
-                // mqtt_manager_enqueue_log("hardware_error", "ph_read_failed");
+                mqtt_manager_enqueue_log("hardware_error", "ph_read_failed");
             }
         }
 
-        // Handle feeding
         if (bits & EVENT_BIT_FEED_SCHEDULED)
         {
             bool feed_successful = hardware_manager_feed();
-            // mqtt_manager_enqueue_feed(feed_successful);
+            mqtt_manager_enqueue_feed(feed_successful);
+            if (!feed_successful)
+                event_manager_set_bits(EVENT_BIT_PUBLISH_SCHEDULED);
             ble_manager_notify_feed(feed_successful);
             g_last_feed_time = time(NULL);
+            display_set_feed_time(g_last_feed_time);
             nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_feed", &g_last_feed_time, sizeof(time_t));
             event_manager_clear_bits(EVENT_BIT_FEED_SCHEDULED);
         }
@@ -871,7 +963,7 @@ void event_manager_connection_task(void *pvParameters)
 
     while (1)
     {
-        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_PUBLISH_SCHEDULED, false, false, portMAX_DELAY);
+        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_PUBLISH_SCHEDULED | EVENT_BIT_OTA_UPDATE, true, false, portMAX_DELAY);
         if (bits & EVENT_BIT_PUBLISH_SCHEDULED)
         {
             ESP_LOGI(TAG, "Publish scheduled");
@@ -897,6 +989,53 @@ void event_manager_connection_task(void *pvParameters)
             wifi_manager_stop();
             activity_counter_decrement();
             event_manager_clear_bits(EVENT_BIT_PUBLISH_SCHEDULED);
+        }
+        else if (bits & EVENT_BIT_OTA_UPDATE)
+        {
+            ESP_LOGI(TAG, "OTA update triggered");
+            activity_counter_increment();
+
+            // Turn on WiFi
+            wifi_manager_start();
+
+            // Wait for WiFi to be ready
+            bits = event_manager_wait_bits(EVENT_BIT_WIFI_STATUS, false, true, pdMS_TO_TICKS(CONNECTION_TIMEOUT_MS));
+
+            if (!(bits & EVENT_BIT_WIFI_STATUS))
+            {
+                ESP_LOGE(TAG, "OTA update failed - WiFi=%d",
+                         (bits & EVENT_BIT_WIFI_STATUS) != 0);
+                activity_counter_decrement();
+                wifi_manager_stop();
+                event_manager_clear_bits(EVENT_BIT_OTA_UPDATE);
+                continue;
+            }
+
+            ESP_LOGI(TAG, "WiFi ready, starting firmware update...");
+
+            const char *firmware_url = command_service_get_firmware_url();
+            if (firmware_url == NULL || strlen(firmware_url) == 0)
+            {
+                ESP_LOGE(TAG, "No firmware URL available");
+                wifi_manager_stop();
+                activity_counter_decrement();
+                event_manager_clear_bits(EVENT_BIT_OTA_UPDATE);
+                continue;
+            }
+
+            esp_err_t err = http_manager_perform_ota_update(firmware_url, NULL);
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "OTA update failed: %s", esp_err_to_name(err));
+                wifi_manager_stop();
+                activity_counter_decrement();
+                event_manager_clear_bits(EVENT_BIT_OTA_UPDATE);
+                continue;
+            }
+
+            wifi_manager_stop();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
         }
     }
 }
@@ -952,8 +1091,7 @@ void event_manager_sleep_task(void *pvParameters)
             if (shortest_remaining != UINT32_MAX && shortest_remaining > 0)
             {
                 sleep_duration_us = (uint64_t)shortest_remaining * 1000000ULL;
-                ESP_LOGI(TAG, "Using shortest timer: %lu seconds",
-                         (unsigned long)shortest_remaining, (long long)sleep_duration_us);
+                ESP_LOGI(TAG, "Using shortest timer: %lu seconds", (unsigned long)shortest_remaining);
             }
             else
             {
@@ -994,9 +1132,12 @@ void event_manager_init(void)
 
     esp_sleep_wakeup_cause_t wake_reason = esp_sleep_get_wakeup_cause();
 
-    if (wake_reason == ESP_SLEEP_WAKEUP_TIMER)
+    // Wake display only on normal boot or button press, not on timer wake
+    if (wake_reason == ESP_SLEEP_WAKEUP_UNDEFINED)
     {
-        ESP_LOGI(TAG, "Woke up from deep sleep - timer expired");
+        ESP_LOGI(TAG, "Normal boot (not from deep sleep)");
+        hardware_manager_display_wake();
+        hardware_manager_display_update();
     }
     else if (wake_reason == ESP_SLEEP_WAKEUP_EXT0)
     {
@@ -1004,15 +1145,22 @@ void event_manager_init(void)
         hardware_manager_display_wake();
         hardware_manager_display_update();
     }
-    else if (wake_reason == ESP_SLEEP_WAKEUP_UNDEFINED)
+    else if (wake_reason == ESP_SLEEP_WAKEUP_TIMER)
     {
-        hardware_manager_display_wake();
-        hardware_manager_display_update();
+        ESP_LOGI(TAG, "Woke up from deep sleep - timer expired (display will remain off)");
     }
 
     xTaskCreate(
-        event_manager_ble_task,
-        "ble_coordinator",
+        event_manager_advertising_task,
+        "adv_coordinator",
+        4 * 1024,
+        NULL,
+        2,
+        NULL);
+
+    xTaskCreate(
+        event_manager_pairing_task,
+        "pair_coordinator",
         4 * 1024,
         NULL,
         2,
@@ -1020,7 +1168,7 @@ void event_manager_init(void)
 
     xTaskCreate(
         event_manager_provisioning_task,
-        "provisioning_coordinator",
+        "provision_coordinator",
         4 * 1024,
         NULL,
         2,

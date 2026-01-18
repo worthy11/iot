@@ -14,6 +14,7 @@ idf_component_register(SRCS "main.c"
                            "utils/fs_utils.c"
                            
                            "mqtt/mqtt_manager.c"
+                           "mqtt/http_manager.c"
                            
                            "hardware/buttons/button.c"
                            "hardware/buttons/left_button.c"
@@ -28,4 +29,4 @@ idf_component_register(SRCS "main.c"
                            "hardware/hardware_manager.c"
 
                     INCLUDE_DIRS "." "wifi" "ble" "utils" "hardware" "mqtt"
-                    REQUIRES esp_wifi console nvs_flash driver bt mqtt esp_adc json spiffs)
+                    REQUIRES esp_wifi console nvs_flash driver bt mqtt esp_adc json spiffs esp_https_ota esp_http_client app_update)

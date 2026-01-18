@@ -58,13 +58,11 @@ esp_err_t fs_utils_init(void)
         ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
     }
 
-    // Note: SPIFFS is a flat filesystem, no directories needed
     fs_mounted = true;
     ESP_LOGI(TAG, "SPIFFS initialized successfully");
     return ESP_OK;
 }
 
-// Generate UUID-like ID
 static void generate_id(char *id, size_t id_size)
 {
     uint32_t random_bytes[4];
@@ -120,16 +118,12 @@ esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload
         fclose(file);
     }
 
-    // Parse payload JSON to extract value
+    // Parse payload JSON to store it directly
     cJSON *payload_json = cJSON_Parse(payload);
-    cJSON *value_item = NULL;
-    if (payload_json != NULL)
+    if (payload_json == NULL)
     {
-        value_item = cJSON_GetObjectItem(payload_json, "value");
-        if (value_item == NULL)
-        {
-            value_item = cJSON_GetObjectItem(payload_json, "sensor");
-        }
+        // If parsing fails, store as string
+        payload_json = cJSON_CreateString(payload);
     }
 
     // Create new log entry
@@ -149,17 +143,8 @@ esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload
     cJSON_AddStringToObject(entry, "topic", topic);
     cJSON_AddNumberToObject(entry, "qos", qos);
 
-    cJSON *payload_obj = cJSON_CreateObject();
-    if (value_item != NULL)
-    {
-        cJSON_AddItemToObject(payload_obj, "value", cJSON_Duplicate(value_item, 1));
-    }
-    else
-    {
-        // Fallback: store entire payload as string
-        cJSON_AddStringToObject(payload_obj, "raw", payload);
-    }
-    cJSON_AddItemToObject(entry, "payload", payload_obj);
+    // Store the payload JSON directly (no wrapper)
+    cJSON_AddItemToObject(entry, "payload", payload_json);
 
     cJSON_AddItemToArray(log_array, entry);
 
@@ -191,14 +176,12 @@ esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload
     if (json_string != NULL)
     {
         fprintf(file, "%s", json_string);
+        fflush(file); // Ensure data is written to filesystem before closing
         free(json_string);
     }
     fclose(file);
 
-    if (payload_json != NULL)
-    {
-        cJSON_Delete(payload_json);
-    }
+    // payload_json is now owned by the entry, don't delete it here
     cJSON_Delete(log_array);
 
     ESP_LOGI(TAG, "Saved MQTT log entry: topic=%s, id=%s", topic, id);
@@ -236,21 +219,49 @@ esp_err_t fs_utils_load_mqtt_logs(char **topics, int **qos, char **payloads, tim
         return ESP_ERR_NO_MEM;
     }
 
-    fread(buffer, 1, file_size, file);
-    buffer[file_size] = '\0';
+    size_t bytes_read = fread(buffer, 1, file_size, file);
     fclose(file);
 
-    cJSON *log_array = cJSON_Parse(buffer);
-    free(buffer);
-
-    if (log_array == NULL || !cJSON_IsArray(log_array))
+    if (bytes_read != (size_t)file_size)
     {
-        if (log_array != NULL)
-        {
-            cJSON_Delete(log_array);
-        }
+        ESP_LOGW(TAG, "Failed to read complete file: expected %ld bytes, read %zu bytes", file_size, bytes_read);
+        free(buffer);
         return ESP_ERR_INVALID_RESPONSE;
     }
+
+    buffer[file_size] = '\0';
+
+    cJSON *log_array = cJSON_Parse(buffer);
+    const char *error_ptr = cJSON_GetErrorPtr();
+
+    if (log_array == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to parse JSON from log file. Error at: %s", error_ptr ? error_ptr : "unknown");
+        // Log first 200 chars of buffer for debugging
+        size_t log_len = file_size > 200 ? 200 : file_size;
+        char log_buf[201];
+        memcpy(log_buf, buffer, log_len);
+        log_buf[log_len] = '\0';
+        ESP_LOGE(TAG, "File content (first %zu chars): %s", log_len, log_buf);
+        ESP_LOGW(TAG, "Clearing corrupted log file and starting fresh");
+        free(buffer);
+        // Clear the corrupted file
+        fs_utils_clear_mqtt_logs();
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    if (!cJSON_IsArray(log_array))
+    {
+        ESP_LOGE(TAG, "Parsed JSON is not an array");
+        cJSON_Delete(log_array);
+        free(buffer);
+        ESP_LOGW(TAG, "Clearing corrupted log file and starting fresh");
+        // Clear the corrupted file
+        fs_utils_clear_mqtt_logs();
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    free(buffer);
 
     int array_size = cJSON_GetArraySize(log_array);
     if (array_size == 0)
@@ -338,34 +349,13 @@ esp_err_t fs_utils_load_mqtt_logs(char **topics, int **qos, char **payloads, tim
         }
         if (payload_item != NULL)
         {
-            // Extract value from payload object
-            cJSON *value_item = cJSON_GetObjectItem(payload_item, "value");
-            if (value_item != NULL)
+            // Payload is stored directly as JSON, just print it
+            char *payload_str = cJSON_Print(payload_item);
+            if (payload_str != NULL)
             {
-                // Reconstruct original JSON message format
-                cJSON *reconstructed = cJSON_CreateObject();
-                cJSON_AddItemToObject(reconstructed, "value", cJSON_Duplicate(value_item, 1));
-                cJSON_AddNumberToObject(reconstructed, "timestamp", (*timestamps)[i]);
-
-                char *payload_str = cJSON_Print(reconstructed);
-                if (payload_str != NULL)
-                {
-                    strncpy(*payloads + i * 512, payload_str, 511);
-                    (*payloads)[i * 512 + 511] = '\0';
-                    free(payload_str);
-                }
-                cJSON_Delete(reconstructed);
-            }
-            else
-            {
-                // Fallback: use raw payload
-                char *payload_str = cJSON_Print(payload_item);
-                if (payload_str != NULL)
-                {
-                    strncpy(*payloads + i * 512, payload_str, 511);
-                    (*payloads)[i * 512 + 511] = '\0';
-                    free(payload_str);
-                }
+                strncpy(*payloads + i * 512, payload_str, 511);
+                (*payloads)[i * 512 + 511] = '\0';
+                free(payload_str);
             }
         }
     }
@@ -423,6 +413,7 @@ esp_err_t fs_utils_remove_mqtt_log(const char *id)
 
     // Find and remove entry with matching ID
     int array_size = cJSON_GetArraySize(log_array);
+    bool found = false;
     for (int i = 0; i < array_size; i++)
     {
         cJSON *entry = cJSON_GetArrayItem(log_array, i);
@@ -435,8 +426,15 @@ esp_err_t fs_utils_remove_mqtt_log(const char *id)
         if (id_item != NULL && cJSON_IsString(id_item) && strcmp(id_item->valuestring, id) == 0)
         {
             cJSON_DeleteItemFromArray(log_array, i);
+            found = true;
+            ESP_LOGI(TAG, "Removed log entry with id: %s", id);
             break;
         }
+    }
+
+    if (!found)
+    {
+        ESP_LOGW(TAG, "Log entry with id '%s' not found in file (array_size=%d)", id, array_size);
     }
 
     // Save back to file

@@ -3,6 +3,7 @@
 #include "gatt_svc.h"
 #include "host/ble_gap.h"
 #include "host/ble_store.h"
+#include "host/ble_gatt.h"
 #include "store/config/ble_store_config.h"
 #include "event_manager.h"
 #include "freertos/timers.h"
@@ -35,6 +36,8 @@ static void nimble_host_config_init(void)
     ble_hs_cfg.reset_cb = on_stack_reset;
     ble_hs_cfg.sync_cb = on_stack_sync;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+    ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
+    ble_hs_cfg.gatts_register_arg = NULL;
 
     ble_store_config_init();
 }

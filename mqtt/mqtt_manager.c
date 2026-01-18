@@ -39,10 +39,6 @@ typedef struct
     time_t timestamp;
 } pending_message_t;
 
-#define MAX_PENDING_MESSAGES 20
-static pending_message_t pending_messages[MAX_PENDING_MESSAGES];
-static int pending_count = 0;
-
 void mqtt_manager_enqueue_temperature(float temperature);
 void mqtt_manager_enqueue_ph(float ph);
 void mqtt_manager_enqueue_feed(bool success);
@@ -135,7 +131,6 @@ static void build_shadow_topic(char *buf, size_t buf_size, const char *base_topi
 
 static void publish(const char *topic, const char *message)
 {
-    static char message_with_timestamp[512];
     static char target_topic[256];
     const char *final_message;
     bool is_shadow_topic = (strncmp(topic, "$aws/", 5) == 0);
@@ -148,46 +143,26 @@ static void publish(const char *topic, const char *message)
     }
     else
     {
-        add_timestamp_to_json(message_with_timestamp, sizeof(message_with_timestamp), message);
-        final_message = message_with_timestamp;
+        // Message already has timestamp from enqueue time
+        final_message = message;
         snprintf(target_topic, sizeof(target_topic), "%s/%s", client_id, topic);
     }
 
     EventBits_t bits = event_manager_get_bits();
     bool is_connected = (bits & EVENT_BIT_MQTT_STATUS) && (bits & EVENT_BIT_WIFI_STATUS);
-
-    time_t timestamp = time(NULL);
-
     if (!is_connected)
     {
-        ESP_LOGW(TAG, "Saving message to filesystem log, no connection available");
-        char log_id[37];
-        fs_utils_save_mqtt_log(target_topic, 1, final_message, timestamp, log_id, sizeof(log_id));
+        ESP_LOGI(TAG, "Not connected, cannot publish");
         return;
     }
 
     int msg_id = esp_mqtt_client_publish(g_client, target_topic, final_message, 0, 1, 0);
     if (msg_id < 0)
     {
-        ESP_LOGE(TAG, "Failed to publish message, saving to filesystem log");
-        char log_id[37];
-        fs_utils_save_mqtt_log(target_topic, 1, final_message, timestamp, log_id, sizeof(log_id));
-        return;
+        ESP_LOGE(TAG, "Failed to publish message");
     }
 
     ESP_LOGI(TAG, "Published message to topic %s", target_topic);
-
-    if (pending_count < MAX_PENDING_MESSAGES)
-    {
-        char log_id[37];
-        fs_utils_save_mqtt_log(target_topic, 1, final_message, timestamp, log_id, sizeof(log_id));
-
-        strncpy(pending_messages[pending_count].log_id, log_id, sizeof(pending_messages[pending_count].log_id) - 1);
-        pending_messages[pending_count].log_id[36] = '\0';
-        pending_messages[pending_count].msg_id = msg_id;
-        pending_messages[pending_count].timestamp = timestamp;
-        pending_count++;
-    }
 }
 
 static void publish_queued(void)
@@ -199,10 +174,20 @@ static void publish_queued(void)
     char **log_ids = NULL;
     size_t count = 0;
 
+    // Small delay to ensure filesystem has synced any recent writes
+    vTaskDelay(pdMS_TO_TICKS(100));
+
     esp_err_t err = fs_utils_load_mqtt_logs(&topics, &qos, &payloads, &timestamps, &log_ids, &count);
     if (err != ESP_OK || count == 0)
     {
-        ESP_LOGI(TAG, "No queued messages to publish from filesystem");
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Failed to load queued messages from filesystem: %s", esp_err_to_name(err));
+        }
+        else
+        {
+            ESP_LOGI(TAG, "No queued messages to publish from filesystem");
+        }
         return;
     }
 
@@ -222,13 +207,13 @@ static void publish_queued(void)
             topic_suffix++;
         }
 
-        if (log_ids[i] != NULL && log_ids[i][0] != '\0')
-        {
-            fs_utils_remove_mqtt_log(log_ids[i]);
-        }
-
+        // Use the publish function
         publish(topic_suffix, payloads + i * 512);
     }
+
+    // Clear the entire log file after publishing all queued messages
+    fs_utils_clear_mqtt_logs();
+    ESP_LOGI(TAG, "Cleared all queued messages from log after publishing");
 
     if (log_ids != NULL)
     {
@@ -661,8 +646,6 @@ static void event_handler(void *handler_args,
             ESP_LOGI(TAG, "Requesting shadow state via shadow/get");
             esp_mqtt_client_publish(g_client, shadow_get_topic, "", 0, 1, 0);
         }
-        publish_queued();
-
         break;
     }
 
@@ -710,23 +693,7 @@ static void event_handler(void *handler_args,
 
     case MQTT_EVENT_PUBLISHED:
     {
-        int msg_id = event->msg_id;
-
-        for (int i = 0; i < pending_count; i++)
-        {
-            if (pending_messages[i].msg_id == msg_id)
-            {
-                fs_utils_remove_mqtt_log(pending_messages[i].log_id);
-                ESP_LOGI(TAG, "Message confirmed (puback), removed from log: id=%s", pending_messages[i].log_id);
-
-                for (int j = i; j < pending_count - 1; j++)
-                {
-                    pending_messages[j] = pending_messages[j + 1];
-                }
-                pending_count--;
-                break;
-            }
-        }
+        ESP_LOGI(TAG, "Message published: msg_id=%d", event->msg_id);
         break;
     }
 
@@ -833,6 +800,17 @@ esp_err_t mqtt_manager_load_config(void)
 void mqtt_manager_init(void)
 {
     initialize_sntp();
+
+    // Clear all enqueued messages on startup
+    esp_err_t clear_err = fs_utils_clear_mqtt_logs();
+    if (clear_err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "Cleared all enqueued messages on startup");
+    }
+    else if (clear_err != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGW(TAG, "Failed to clear enqueued messages on startup: %s", esp_err_to_name(clear_err));
+    }
 
     esp_err_t err = mqtt_manager_load_config();
     if (err == ESP_OK)

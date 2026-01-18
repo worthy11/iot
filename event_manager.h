@@ -33,6 +33,7 @@
 #define EVENT_BIT_PUBLISH_SCHEDULED BIT15
 #define EVENT_BIT_WIFI_STATUS BIT16
 #define EVENT_BIT_MQTT_STATUS BIT17
+#define EVENT_BIT_OTA_UPDATE BIT19
 
 void event_manager_init(void);
 EventBits_t event_manager_set_bits(EventBits_t bits);
