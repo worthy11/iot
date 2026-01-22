@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
+#include "host/ble_gap.h"
 #include "event_manager.h"
 #include "hardware/hardware_manager.h"
 #include "utils/nvs_utils.h"
@@ -27,6 +28,10 @@ static const ble_uuid128_t TEMP_INTERVAL_CHR_UUID = BLE_UUID128_INIT(0xc4, 0xde,
 static const ble_uuid128_t FEED_INTERVAL_CHR_UUID = BLE_UUID128_INIT(0xc5, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 static const ble_uuid128_t PUBLISH_INTERVAL_CHR_UUID = BLE_UUID128_INIT(0xc6, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 static const ble_uuid128_t FIRMWARE_CHR_UUID = BLE_UUID128_INIT(0xc7, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+static const ble_uuid128_t TEMP_LOWER_CHR_UUID = BLE_UUID128_INIT(0xc8, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+static const ble_uuid128_t TEMP_UPPER_CHR_UUID = BLE_UUID128_INIT(0xc9, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+static const ble_uuid128_t PH_LOWER_CHR_UUID = BLE_UUID128_INIT(0xca, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+static const ble_uuid128_t PH_UPPER_CHR_UUID = BLE_UUID128_INIT(0xcb, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 
 static int command_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg);
@@ -143,6 +148,66 @@ static const struct ble_gatt_svc_def command_svc_defs[] = {
                     {0},
                 },
             },
+            {
+                .uuid = &TEMP_LOWER_CHR_UUID.u,
+                .access_cb = command_access_cb,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .min_key_size = 16,
+                .descriptors = (struct ble_gatt_dsc_def[]){
+                    {
+                        .uuid = BLE_UUID16_DECLARE(0x2901),
+                        .att_flags = BLE_ATT_F_READ,
+                        .access_cb = command_desc_cb,
+                        .arg = "Temp Lower",
+                    },
+                    {0},
+                },
+            },
+            {
+                .uuid = &TEMP_UPPER_CHR_UUID.u,
+                .access_cb = command_access_cb,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .min_key_size = 16,
+                .descriptors = (struct ble_gatt_dsc_def[]){
+                    {
+                        .uuid = BLE_UUID16_DECLARE(0x2901),
+                        .att_flags = BLE_ATT_F_READ,
+                        .access_cb = command_desc_cb,
+                        .arg = "Temp Upper",
+                    },
+                    {0},
+                },
+            },
+            {
+                .uuid = &PH_LOWER_CHR_UUID.u,
+                .access_cb = command_access_cb,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .min_key_size = 16,
+                .descriptors = (struct ble_gatt_dsc_def[]){
+                    {
+                        .uuid = BLE_UUID16_DECLARE(0x2901),
+                        .att_flags = BLE_ATT_F_READ,
+                        .access_cb = command_desc_cb,
+                        .arg = "pH Lower",
+                    },
+                    {0},
+                },
+            },
+            {
+                .uuid = &PH_UPPER_CHR_UUID.u,
+                .access_cb = command_access_cb,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .min_key_size = 16,
+                .descriptors = (struct ble_gatt_dsc_def[]){
+                    {
+                        .uuid = BLE_UUID16_DECLARE(0x2901),
+                        .att_flags = BLE_ATT_F_READ,
+                        .access_cb = command_desc_cb,
+                        .arg = "pH Upper",
+                    },
+                    {0},
+                },
+            },
             {0},
         },
     },
@@ -161,7 +226,6 @@ static int command_desc_cb(uint16_t conn_handle, uint16_t attr_handle,
 static int command_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-    (void)conn_handle;
     (void)arg;
 
     const ble_uuid_t *uuid = ctxt->chr->uuid;
@@ -231,6 +295,30 @@ static int command_access_cb(uint16_t conn_handle, uint16_t attr_handle,
             rc = os_mbuf_append(ctxt->om, version, strlen(version));
             return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
+        else if (ble_uuid_cmp(uuid, &TEMP_LOWER_CHR_UUID.u) == 0)
+        {
+            float threshold = event_manager_get_temp_lower();
+            rc = os_mbuf_append(ctxt->om, &threshold, sizeof(float));
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+        else if (ble_uuid_cmp(uuid, &TEMP_UPPER_CHR_UUID.u) == 0)
+        {
+            float threshold = event_manager_get_temp_upper();
+            rc = os_mbuf_append(ctxt->om, &threshold, sizeof(float));
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+        else if (ble_uuid_cmp(uuid, &PH_LOWER_CHR_UUID.u) == 0)
+        {
+            float threshold = event_manager_get_ph_lower();
+            rc = os_mbuf_append(ctxt->om, &threshold, sizeof(float));
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+        else if (ble_uuid_cmp(uuid, &PH_UPPER_CHR_UUID.u) == 0)
+        {
+            float threshold = event_manager_get_ph_upper();
+            rc = os_mbuf_append(ctxt->om, &threshold, sizeof(float));
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
     }
     else if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR)
     {
@@ -248,7 +336,6 @@ static int command_access_cb(uint16_t conn_handle, uint16_t attr_handle,
         if (len > (int)sizeof(buf))
         {
             len = sizeof(buf);
-            ESP_LOGW(TAG, "Command write truncated to %d bytes", len);
         }
 
         ble_hs_mbuf_to_flat(om, buf, len, NULL);
@@ -363,6 +450,66 @@ static int command_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                 s_firmware_url_len += copy_len;
                 s_firmware_url[s_firmware_url_len] = '\0';
                 ESP_LOGI(TAG, "Firmware URL chunk received");
+            }
+            return 0;
+        }
+        else if (ble_uuid_cmp(uuid, &TEMP_LOWER_CHR_UUID.u) == 0)
+        {
+            if (len >= 4)
+            {
+                float threshold;
+                memcpy(&threshold, buf, sizeof(float));
+                ESP_LOGI(TAG, "Change temp lower threshold: %.2f", threshold);
+                event_manager_set_temp_lower(threshold);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Change temp lower threshold command too short");
+            }
+            return 0;
+        }
+        else if (ble_uuid_cmp(uuid, &TEMP_UPPER_CHR_UUID.u) == 0)
+        {
+            if (len >= 4)
+            {
+                float threshold;
+                memcpy(&threshold, buf, sizeof(float));
+                ESP_LOGI(TAG, "Change temp upper threshold: %.2f", threshold);
+                event_manager_set_temp_upper(threshold);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Change temp upper threshold command too short");
+            }
+            return 0;
+        }
+        else if (ble_uuid_cmp(uuid, &PH_LOWER_CHR_UUID.u) == 0)
+        {
+            if (len >= 4)
+            {
+                float threshold;
+                memcpy(&threshold, buf, sizeof(float));
+                ESP_LOGI(TAG, "Change pH lower threshold: %.2f", threshold);
+                event_manager_set_ph_lower(threshold);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Change pH lower threshold command too short");
+            }
+            return 0;
+        }
+        else if (ble_uuid_cmp(uuid, &PH_UPPER_CHR_UUID.u) == 0)
+        {
+            if (len >= 4)
+            {
+                float threshold;
+                memcpy(&threshold, buf, sizeof(float));
+                ESP_LOGI(TAG, "Change pH upper threshold: %.2f", threshold);
+                event_manager_set_ph_upper(threshold);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Change pH upper threshold command too short");
             }
             return 0;
         }

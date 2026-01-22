@@ -13,6 +13,7 @@
 static const char *TAG = "gatt_server";
 
 static TaskHandle_t nimble_host_task_handle = NULL;
+static bool gatt_server_running = false;
 
 static void on_stack_reset(int reason);
 static void on_stack_sync(void);
@@ -38,6 +39,8 @@ static void nimble_host_config_init(void)
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
     ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
     ble_hs_cfg.gatts_register_arg = NULL;
+    // Note: sm_io_cb is not a field in ble_hs_cfg
+    // The passkey callback is handled through GAP events or must be set differently
 
     ble_store_config_init();
 }
@@ -82,14 +85,32 @@ void gatt_server_init(void)
 
 void start_gatt_server(void)
 {
-
+    if (gatt_server_running)
+    {
+        ESP_LOGW(TAG, "GATT server already running");
+        return;
+    }
     adv_init();
     ESP_LOGI(TAG, "GATT server advertising started");
+    gatt_server_running = true;
 }
 
 void stop_gatt_server(void)
 {
     int rc;
+
+    EventBits_t bits = event_manager_get_bits();
+    if (bits & EVENT_BIT_PAIRING_MODE_ON)
+    {
+        ESP_LOGW(TAG, "Pairing mode on, cannot stop GATT server");
+        return;
+    }
+
+    if (!gatt_server_running)
+    {
+        ESP_LOGW(TAG, "GATT server not running");
+        return;
+    }
 
     rc = ble_gap_adv_stop();
     if (rc != 0 && rc != BLE_HS_EALREADY)
@@ -100,4 +121,5 @@ void stop_gatt_server(void)
     {
         ESP_LOGI(TAG, "GATT server advertising stopped");
     }
+    gatt_server_running = false;
 }

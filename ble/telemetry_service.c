@@ -4,6 +4,7 @@
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
 #include "host/ble_gatt.h"
+#include "host/ble_gap.h"
 #include <string.h>
 #include <stdint.h>
 
@@ -13,15 +14,18 @@ static const ble_uuid128_t TELEMETRY_SVC_UUID = BLE_UUID128_INIT(0xd0, 0xde, 0xb
 static const ble_uuid128_t TEMP_CHR_UUID = BLE_UUID128_INIT(0xd1, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 static const ble_uuid128_t PH_CHR_UUID = BLE_UUID128_INIT(0xd2, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 static const ble_uuid128_t FEED_CHR_UUID = BLE_UUID128_INIT(0xd3, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+static const ble_uuid128_t ALERT_CHR_UUID = BLE_UUID128_INIT(0xd4, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 
 static uint16_t s_temp_chr_val_handle;
 static uint16_t s_ph_chr_val_handle;
 static uint16_t s_feed_chr_val_handle;
+static uint16_t s_alert_chr_val_handle;
 
 // Current values to be sent via notifications
 static float s_current_temp = 0.0f;
 static float s_current_ph = 0.0f;
 static uint8_t s_current_feed = 0;
+static char s_current_alert[256] = {0};
 
 static int telemetry_read_cb(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg);
@@ -75,6 +79,18 @@ static const struct ble_gatt_svc_def telemetry_svc_defs[] = {
                                                                                                                                                                       },
                 // Note: CCCD (0x2902) is automatically added by NimBLE when BLE_GATT_CHR_F_NOTIFY flag is set
             },
+            {
+                .uuid = &ALERT_CHR_UUID.u, .access_cb = telemetry_read_cb, .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY, .val_handle = &s_alert_chr_val_handle, .descriptors = (struct ble_gatt_dsc_def[]){
+                                                                                                                                                                            {
+                                                                                                                                                                                .uuid = BLE_UUID16_DECLARE(0x2901),
+                                                                                                                                                                                .att_flags = BLE_ATT_F_READ,
+                                                                                                                                                                                .access_cb = telemetry_desc_cb,
+                                                                                                                                                                                .arg = "Alert",
+                                                                                                                                                                            },
+                                                                                                                                                                            {0},
+                                                                                                                                                                        },
+                // Note: CCCD (0x2902) is automatically added by NimBLE when BLE_GATT_CHR_F_NOTIFY flag is set
+            },
             {0},
         },
     },
@@ -121,8 +137,6 @@ static int telemetry_cccd_cb(uint16_t conn_handle, uint16_t attr_handle,
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_DSC)
     {
-        // Reading CCCD - NimBLE handles this automatically, but we log it
-        // The actual value will be returned by NimBLE's CCCD storage
         ESP_LOGI(TAG, "CCCD read: conn_handle=%d, characteristic='%s', cccd_attr_handle=%d",
                  conn_handle, char_name, attr_handle);
         return 0;
@@ -186,6 +200,15 @@ static int telemetry_read_cb(uint16_t conn_handle, uint16_t attr_handle,
     {
         rc = os_mbuf_append(ctxt->om, &s_current_feed, sizeof(uint8_t));
         return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+    else if (ble_uuid_cmp(uuid, &ALERT_CHR_UUID.u) == 0)
+    {
+        size_t alert_len = strlen(s_current_alert);
+        if (alert_len > 0)
+        {
+            rc = os_mbuf_append(ctxt->om, s_current_alert, alert_len);
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
     }
 
     return 0;
@@ -262,6 +285,13 @@ void telemetry_service_notify_feed(bool success)
     notify_all_connections(s_feed_chr_val_handle);
 }
 
+void telemetry_service_notify_alert(const char *event, const char *value)
+{
+    snprintf(s_current_alert, sizeof(s_current_alert), "{\"event\":\"%s\",\"value\":\"%s\"}", event, value);
+    ESP_LOGI(TAG, "Sending alert notification: %s", s_current_alert);
+    notify_all_connections(s_alert_chr_val_handle);
+}
+
 const struct ble_gatt_svc_def *telemetry_service_get_svc_def(void)
 {
     return telemetry_svc_defs;
@@ -280,6 +310,10 @@ const char *telemetry_service_get_char_name(uint16_t attr_handle)
     else if (attr_handle == s_feed_chr_val_handle)
     {
         return "Feed";
+    }
+    else if (attr_handle == s_alert_chr_val_handle)
+    {
+        return "Alert";
     }
     return "Unknown";
 }

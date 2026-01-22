@@ -11,5 +11,6 @@
 void adv_init(void);
 int gap_init(void);
 uint32_t gap_get_current_passkey(void);
+void gap_configure_security(void);
 
 #endif // GAP_SVC_H

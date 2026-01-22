@@ -38,7 +38,7 @@ static display_settings_t g_display_settings = {
     .last_feeding_display_enabled = true,
     .next_feeding_display_enabled = true,
     .display_contrast = 32,
-    .display_sleep_time_min = 1};
+    .display_sleep_time_min = 15}; // Default 15 seconds (values < 60 are seconds, >= 60 are minutes)
 
 // Recent measurement data stored in display NVS namespace
 static float g_temperature = 0.0f;
@@ -208,7 +208,6 @@ static void display_actions(void);
 static void display_settings(void);
 static void display_config(void);
 
-void display_passkey(int passkey);
 void display_pairing_mode(void);
 void display_feed_result(bool success);
 void display_temp_measurement(void);
@@ -239,18 +238,28 @@ static void action_measure_ph(void);
 static void action_toggle_temp_display(void);
 static void action_toggle_ph_display(void);
 static void action_toggle_last_feed_display(void);
-static void action_toggle_next_feed_display(void);
 static void action_change_contrast(void);
 static void action_change_sleep_time(void);
 static void action_clear_wifi(void);
 static void action_factory_settings(void);
-static void action_pairing_mode(void);
+
+// Convert stored sleep time to milliseconds (values < 60 are seconds, >= 60 are minutes for backward compatibility)
+static uint32_t sleep_time_to_ms(uint32_t sleep_time)
+{
+    if (sleep_time == 0)
+        return portMAX_DELAY;
+    if (sleep_time < 60)
+        return sleep_time * 1000; // Seconds
+    else
+        return sleep_time * 60000; // Minutes (for backward compatibility)
+}
 
 static void reset_sleep_timer(void)
 {
     if (sleep_timer != NULL && g_display_settings.display_sleep_time_min > 0)
     {
-        xTimerChangePeriod(sleep_timer, pdMS_TO_TICKS(g_display_settings.display_sleep_time_min * 60000), 0);
+        uint32_t sleep_time_ms = sleep_time_to_ms(g_display_settings.display_sleep_time_min);
+        xTimerChangePeriod(sleep_timer, pdMS_TO_TICKS(sleep_time_ms), 0);
         xTimerReset(sleep_timer, 0);
     }
 }
@@ -261,8 +270,8 @@ static void sleep_timer_callback(TimerHandle_t xTimer)
     {
         display_awake = false;
         oled_display_off();
-        event_manager_clear_bits(EVENT_BIT_DISPLAY_STATUS);
         event_manager_activity_counter_decrement();
+        event_manager_set_bits(EVENT_BIT_DEEP_SLEEP);
     }
 }
 
@@ -346,7 +355,7 @@ static void display_selection(void)
     oled_set_position(0, 0);
     oled_draw_text(" <<<  MENU  >>> ", font_size, 0);
 
-    const char *menu_items[] = {"<< BACK", "Actions", "Display Options", "Configuration"};
+    const char *menu_items[] = {"<< BACK", "Actions", "Display Options", "Configuration", "Pairing Mode"};
     const int menu_count = sizeof(menu_items) / sizeof(menu_items[0]);
 
     for (int i = 0; i < menu_count; i++)
@@ -423,7 +432,7 @@ static void display_settings(void)
     oled_draw_text(" DISPLAY OPTIONS", font_size, 0);
 
     char menu_line[64];
-    const int menu_count = 8;
+    const int menu_count = 6;
     int visible_start = 0;
     if (sm.menu_index > 2)
         visible_start = sm.menu_index - 2;
@@ -455,28 +464,27 @@ static void display_settings(void)
                      g_display_settings.last_feeding_display_enabled ? "ON" : "OFF");
             break;
         case 4:
-            snprintf(menu_line, sizeof(menu_line), "Due %s",
-                     g_display_settings.next_feeding_display_enabled ? "ON" : "OFF");
-            break;
-        case 5:
             snprintf(menu_line, sizeof(menu_line), "Contrast");
             break;
-        case 6:
+        case 5:
         {
             uint32_t sleep_time = g_display_settings.display_sleep_time_min;
             if (sleep_time == 0)
             {
                 snprintf(menu_line, sizeof(menu_line), "Sleep NEVER");
             }
+            else if (sleep_time < 60)
+            {
+                snprintf(menu_line, sizeof(menu_line), "Sleep %lu sec", (unsigned long)sleep_time);
+            }
             else
             {
-                snprintf(menu_line, sizeof(menu_line), "Sleep %lu min", (unsigned long)sleep_time);
+                // Convert seconds to minutes for display
+                uint32_t minutes = sleep_time / 60;
+                snprintf(menu_line, sizeof(menu_line), "Sleep %lu min", (unsigned long)minutes);
             }
         }
         break;
-        case 7:
-            snprintf(menu_line, sizeof(menu_line), "Factory");
-            break;
         }
 
         if (idx == sm.menu_index)
@@ -511,7 +519,7 @@ static void display_config(void)
     oled_set_position(0, 0);
     oled_draw_text("Configuration", font_size, 0);
 
-    const char *menu_items[] = {"<< BACK", "Clear WiFi", "Factory", "Pairing Mode"};
+    const char *menu_items[] = {"<< BACK", "Clear WiFi", "Factory"};
     const int menu_count = sizeof(menu_items) / sizeof(menu_items[0]);
 
     for (int i = 0; i < menu_count; i++)
@@ -533,27 +541,6 @@ static void display_config(void)
             oled_draw_text(menu_items[i], font_size, 0);
         }
     }
-
-    oled_update_display();
-}
-
-void display_passkey(int passkey)
-{
-    uint8_t font_size_small = 1;
-    uint8_t font_size_large = 2; // Larger font for passkey
-    uint8_t line_height_small = font_size_small * 8 + 2;
-    uint8_t line_height_large = font_size_large * 8 + 2;
-    char passkey_str[16];
-
-    snprintf(passkey_str, sizeof(passkey_str), "%06lu", (unsigned long)passkey);
-
-    oled_clear_display();
-    oled_set_position(0, 0);
-    oled_draw_text("PAIRING", font_size_small, 0); // Header in normal font
-    oled_set_position(line_height_small, 0);
-    oled_draw_text("Code:", font_size_small, 0);
-    oled_set_position(line_height_small + line_height_large, 0);
-    oled_draw_text(passkey_str, font_size_large, 0); // Passkey in large font
 
     oled_update_display();
 }
@@ -696,7 +683,7 @@ static display_state_t transition_selection_left(void)
 
 static display_state_t transition_selection_right(void)
 {
-    if (sm.menu_index < 3)
+    if (sm.menu_index < 4)
     {
         sm.menu_index++;
         return STATE_SELECTION;
@@ -723,6 +710,11 @@ static display_state_t transition_selection_confirm(void)
     case 3:
         sm.menu_index = 0;
         return STATE_CONFIG;
+    case 4:
+        event_manager_set_bits(EVENT_BIT_PAIRING_MODE_ON);
+        event_manager_clear_bits(EVENT_BIT_PAIRING_MODE_OFF);
+        sm.menu_index = 0;
+        return STATE_SELECTION;
     default:
         return STATE_SELECTION;
     }
@@ -778,7 +770,7 @@ static display_state_t transition_settings_left(void)
 
 static display_state_t transition_settings_right(void)
 {
-    if (sm.menu_index < 7)
+    if (sm.menu_index < 5)
     {
         sm.menu_index++;
     }
@@ -802,16 +794,10 @@ static display_state_t transition_settings_confirm(void)
         action_toggle_last_feed_display();
         return STATE_SETTINGS;
     case 4:
-        action_toggle_next_feed_display();
-        return STATE_SETTINGS;
-    case 5:
         action_change_contrast();
         return STATE_SETTINGS;
-    case 6:
+    case 5:
         action_change_sleep_time();
-        return STATE_SETTINGS;
-    case 7:
-        action_factory_settings();
         return STATE_SETTINGS;
     default:
         return STATE_SETTINGS;
@@ -829,8 +815,8 @@ static display_state_t transition_config_left(void)
 
 static display_state_t transition_config_right(void)
 {
-    // Menu items: "<< BACK", "Clear WiFi", "Factory", "Pairing Mode" (4 items, indices 0-3)
-    if (sm.menu_index < 3)
+    // Menu items: "<< BACK", "Clear WiFi", "Factory" (3 items, indices 0-2)
+    if (sm.menu_index < 2)
     {
         sm.menu_index++;
     }
@@ -842,7 +828,7 @@ static display_state_t transition_config_confirm(void)
     switch (sm.menu_index)
     {
     case 0:
-        sm.menu_index = 3;      // Return to config selection (Configuration is now index 3)
+        sm.menu_index = 2;      // Return to config selection (Configuration is now index 2)
         return STATE_SELECTION; // BACK
     case 1:
         action_clear_wifi();
@@ -851,7 +837,6 @@ static display_state_t transition_config_confirm(void)
         action_factory_settings();
         return STATE_CONFIG;
     case 3:
-        action_pairing_mode();
         return STATE_CONFIG;
     default:
         return STATE_CONFIG;
@@ -891,12 +876,6 @@ static void action_toggle_last_feed_display(void)
     save_display_settings_to_nvs();
 }
 
-static void action_toggle_next_feed_display(void)
-{
-    g_display_settings.next_feeding_display_enabled = !g_display_settings.next_feeding_display_enabled;
-    save_display_settings_to_nvs();
-}
-
 static void action_change_contrast(void)
 {
     g_display_settings.display_contrast += 32;
@@ -908,28 +887,37 @@ static void action_change_contrast(void)
 
 static void action_change_sleep_time(void)
 {
-    switch (g_display_settings.display_sleep_time_min)
-    {
-    case 1:
-        g_display_settings.display_sleep_time_min = 2;
-        break;
-    case 2:
-        g_display_settings.display_sleep_time_min = 5;
-        break;
-    case 5:
-        g_display_settings.display_sleep_time_min = 10;
-        break;
-    case 10:
+    uint32_t current = g_display_settings.display_sleep_time_min;
+
+    // Convert old minute-based values to seconds for backward compatibility
+    if (current == 1)
+        current = 60; // 1 minute -> 60 seconds
+    else if (current == 2)
+        current = 120; // 2 minutes -> 120 seconds
+    else if (current == 5)
+        current = 300; // 5 minutes -> 300 seconds
+    else if (current == 10)
+        current = 600; // 10 minutes -> 600 seconds
+    else if (current == 30 && current >= 60)
+        current = 1800; // 30 minutes -> 1800 seconds (only if it was stored as 30)
+
+    // Cycle through: 15s -> 30s -> 60s (1min) -> 120s (2min) -> 300s (5min) -> 600s (10min) -> 1800s (30min) -> 0 (never) -> 15s
+    if (current == 15)
         g_display_settings.display_sleep_time_min = 30;
-        break;
-    case 30:
-        g_display_settings.display_sleep_time_min = 0; // Never
-        break;
-    case 0:
-    default:
-        g_display_settings.display_sleep_time_min = 1;
-        break;
-    }
+    else if (current == 30)
+        g_display_settings.display_sleep_time_min = 60;
+    else if (current == 60 || (current >= 60 && current < 120))
+        g_display_settings.display_sleep_time_min = 120;
+    else if (current == 120 || (current >= 120 && current < 300))
+        g_display_settings.display_sleep_time_min = 300;
+    else if (current == 300 || (current >= 300 && current < 600))
+        g_display_settings.display_sleep_time_min = 600;
+    else if (current == 600 || (current >= 600 && current < 1800))
+        g_display_settings.display_sleep_time_min = 1800;
+    else if (current == 1800)
+        g_display_settings.display_sleep_time_min = 0;
+    else // 0 or any other value
+        g_display_settings.display_sleep_time_min = 15;
     save_display_settings_to_nvs();
 
     if (sleep_timer != NULL)
@@ -940,36 +928,27 @@ static void action_change_sleep_time(void)
         }
         else
         {
-            xTimerChangePeriod(sleep_timer, pdMS_TO_TICKS(g_display_settings.display_sleep_time_min * 60000), 0);
+            uint32_t sleep_time_ms = sleep_time_to_ms(g_display_settings.display_sleep_time_min);
+            xTimerChangePeriod(sleep_timer, pdMS_TO_TICKS(sleep_time_ms), 0);
             xTimerReset(sleep_timer, 0);
         }
     }
 
-    ESP_LOGI(TAG, "Display sleep time set to %lu minutes", (unsigned long)g_display_settings.display_sleep_time_min);
+    if (g_display_settings.display_sleep_time_min < 60)
+    {
+        ESP_LOGI(TAG, "Display sleep time set to %lu seconds", (unsigned long)g_display_settings.display_sleep_time_min);
+    }
+    else
+    {
+        uint32_t minutes = g_display_settings.display_sleep_time_min / 60;
+        ESP_LOGI(TAG, "Display sleep time set to %lu minutes", (unsigned long)minutes);
+    }
 }
 
 static void action_clear_wifi(void)
 {
     ESP_LOGI(TAG, "Clearing WiFi credentials");
     wifi_manager_clear_credentials();
-}
-
-static void action_pairing_mode(void)
-{
-    EventBits_t bits = event_manager_get_bits();
-    if (bits & EVENT_BIT_PAIRING_MODE)
-    {
-        ESP_LOGI(TAG, "Turning off pairing mode");
-        event_manager_clear_bits(EVENT_BIT_PAIRING_MODE);
-        display_update();
-    }
-    else
-    {
-        ESP_LOGI(TAG, "Turning on pairing mode");
-        event_manager_set_bits(EVENT_BIT_PAIRING_MODE);
-        event_manager_set_bits(EVENT_BIT_BLE_ADVERTISING);
-        display_pairing_mode();
-    }
 }
 
 static void action_factory_settings(void)
@@ -979,14 +958,10 @@ static void action_factory_settings(void)
     // Clear WiFi credentials
     wifi_manager_clear_credentials();
 
-// Clear all intervals and last read times from event_manager
-#define EVENT_MANAGER_NVS_NAMESPACE "event_mgr"
-    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "temp_int", NULL, 0);
-    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "feed_int", NULL, 0);
-    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "publish_int", NULL, 0);
-    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_feed", NULL, 0);
-    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_temp", NULL, 0);
-    nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "last_publish", NULL, 0);
+    // Set all timers to 0
+    event_manager_set_temp_reading_interval(0);
+    event_manager_set_feeding_interval(0);
+    event_manager_set_publish_interval(0);
 
     // Reset display settings to defaults
     g_display_settings.temperature_display_enabled = true;
@@ -1029,7 +1004,6 @@ void display_wake(void)
         display_update();
         display_awake = true;
         oled_display_on();
-        event_manager_set_bits(EVENT_BIT_DISPLAY_STATUS);
         event_manager_activity_counter_increment();
     }
     reset_sleep_timer();
@@ -1038,7 +1012,7 @@ void display_wake(void)
 void display_next(void)
 {
     EventBits_t bits = event_manager_get_bits();
-    if (sm.state >= STATE_COUNT || (bits & EVENT_BIT_PASSKEY_DISPLAY) || (bits & EVENT_BIT_PAIRING_MODE))
+    if (sm.state >= STATE_COUNT || (bits & EVENT_BIT_PAIRING_MODE_ON))
     {
         return;
     }
@@ -1054,7 +1028,7 @@ void display_next(void)
 void display_prev(void)
 {
     EventBits_t bits = event_manager_get_bits();
-    if (sm.state >= STATE_COUNT || (bits & EVENT_BIT_PASSKEY_DISPLAY) || (bits & EVENT_BIT_PAIRING_MODE))
+    if (sm.state >= STATE_COUNT || (bits & EVENT_BIT_PAIRING_MODE_ON))
     {
         return;
     }
@@ -1075,11 +1049,11 @@ void display_confirm(void)
     }
 
     EventBits_t bits = event_manager_get_bits();
-    if (bits & EVENT_BIT_PAIRING_MODE)
+
+    if (bits & EVENT_BIT_PAIRING_MODE_ON)
     {
-        // Turn off pairing mode when confirm is pressed
-        event_manager_clear_bits(EVENT_BIT_PAIRING_MODE);
-        display_update();
+        event_manager_clear_bits(EVENT_BIT_PAIRING_MODE_ON);
+        event_manager_set_bits(EVENT_BIT_PAIRING_MODE_OFF);
         return;
     }
 
@@ -1103,22 +1077,6 @@ void display_event(const char *event, float value)
         return;
     }
 
-    EventBits_t bits = event_manager_get_bits();
-    bool pairing_mode_active = (bits & EVENT_BIT_PAIRING_MODE) != 0;
-    bool passkey_display_active = (bits & EVENT_BIT_PASSKEY_DISPLAY) != 0;
-
-    // If pairing mode is active, only allow passkey display
-    if (pairing_mode_active && strcmp(event, "passkey") != 0)
-    {
-        return;
-    }
-
-    // If passkey display is active, only allow passkey display (block other events)
-    if (passkey_display_active && strcmp(event, "passkey") != 0 && strcmp(event, "pairing") != 0)
-    {
-        return;
-    }
-
     if (!display_awake)
     {
         display_wake();
@@ -1126,16 +1084,7 @@ void display_event(const char *event, float value)
 
     if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
     {
-        if (strcmp(event, "passkey") == 0)
-        {
-            uint32_t passkey = event_manager_get_passkey();
-            display_passkey((int)passkey);
-        }
-        else if (strcmp(event, "pairing") == 0)
-        {
-            display_pairing_mode();
-        }
-        else if (strcmp(event, "temperature") == 0)
+        if (strcmp(event, "temperature") == 0)
         {
             display_temp_result(value);
         }
@@ -1161,6 +1110,10 @@ void display_event(const char *event, float value)
         {
             display_ph_measurement_confirmation();
         }
+        else if (strcmp(event, "pairing_screen") == 0)
+        {
+            display_pairing_mode();
+        }
         else
         {
             ESP_LOGW(TAG, "Unknown display event: %s", event);
@@ -1172,11 +1125,6 @@ void display_event(const char *event, float value)
 
 void display_update(void)
 {
-    EventBits_t bits = event_manager_get_bits();
-
-    if ((bits & EVENT_BIT_PASSKEY_DISPLAY) || (bits & EVENT_BIT_PAIRING_MODE))
-        return;
-
     if (display_mutex != NULL && xSemaphoreTake(display_mutex, portMAX_DELAY) == pdTRUE)
     {
         if (sm.state < STATE_COUNT && state_table[sm.state].display_func != NULL)
@@ -1228,8 +1176,7 @@ void display_init(gpio_num_t scl_gpio, gpio_num_t sda_gpio)
     load_measurement_data_from_nvs();
     oled_set_contrast(g_display_settings.display_contrast);
 
-    uint32_t sleep_time_min = g_display_settings.display_sleep_time_min;
-    uint32_t sleep_time_ms = (sleep_time_min == 0) ? portMAX_DELAY : (sleep_time_min * 60000);
+    uint32_t sleep_time_ms = sleep_time_to_ms(g_display_settings.display_sleep_time_min);
 
     sleep_timer = xTimerCreate("display_sleep", pdMS_TO_TICKS(sleep_time_ms), pdFALSE, NULL, sleep_timer_callback);
     if (sleep_timer == NULL)
@@ -1238,7 +1185,7 @@ void display_init(gpio_num_t scl_gpio, gpio_num_t sda_gpio)
     }
     else
     {
-        if (sleep_time_min > 0)
+        if (g_display_settings.display_sleep_time_min > 0)
         {
             xTimerStart(sleep_timer, 0);
         }

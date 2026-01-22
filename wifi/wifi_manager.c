@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 
 static const char *TAG = "wifi_manager";
+static bool wifi_started = false;
 
 typedef struct
 {
@@ -82,6 +83,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
 esp_err_t wifi_manager_start(void)
 {
+    if (wifi_started)
+    {
+        ESP_LOGI(TAG, "WiFi already started");
+        return ESP_OK;
+    }
+
     // Load WiFi credentials on every start
     wifi_manager_load_config();
 
@@ -95,7 +102,6 @@ esp_err_t wifi_manager_start(void)
         }
         else
         {
-            ESP_LOGI(TAG, "WiFi power save mode set to NONE (always active)");
             vTaskDelay(pdMS_TO_TICKS(50));
             wifi_ps_type_t ps_type;
             esp_wifi_get_ps(&ps_type);
@@ -105,15 +111,28 @@ esp_err_t wifi_manager_start(void)
                 esp_wifi_set_ps(WIFI_PS_NONE);
             }
         }
+        wifi_started = true;
     }
     return err;
 }
 
 void wifi_manager_stop(void)
 {
+    if (!wifi_started)
+    {
+        ESP_LOGI(TAG, "WiFi already stopped");
+        return;
+    }
+    else if (event_manager_get_bits() & EVENT_BIT_OTA_UPDATE)
+    {
+        ESP_LOGI(TAG, "Cannot stop WiFi during OTA update");
+        return;
+    }
+
     esp_wifi_disconnect();
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_wifi_stop();
+    wifi_started = false;
 }
 
 const char *wifi_manager_get_current_ssid(void)
@@ -281,7 +300,7 @@ void wifi_manager_init(void)
             .pmf_cfg = {
                 .capable = true,
                 .required = false},
-            .listen_interval = 3,
+            .listen_interval = 1, // Reduced from 3 to 1 - check AP more frequently to prevent probe timeouts
         },
     };
 

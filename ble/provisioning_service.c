@@ -192,10 +192,50 @@ static void save_all_provisioning_data(void)
     }
 }
 
+static bool is_connection_secure(uint16_t conn_handle)
+{
+    struct ble_gap_conn_desc desc;
+    int rc = ble_gap_conn_find(conn_handle, &desc);
+    if (rc != 0)
+    {
+        ESP_LOGW(TAG, "Failed to find connection: %d", rc);
+        return false;
+    }
+    
+    // Check if pairing mode is active - allow provisioning even without encryption
+    EventBits_t bits = event_manager_get_bits();
+    bool pairing_mode_active = (bits & EVENT_BIT_PAIRING_MODE_ON) != 0;
+    
+    if (pairing_mode_active)
+    {
+        // In pairing mode, allow provisioning even before encryption is established
+        ESP_LOGD(TAG, "Pairing mode active - allowing provisioning access");
+        return true;
+    }
+    
+    // Outside pairing mode, require encryption and authentication
+    if (desc.sec_state.encrypted)
+    {
+        if (desc.sec_state.bonded)
+        {
+            return true;
+        }
+        return desc.sec_state.authenticated;
+    }
+    return false;
+}
+
 static int provisioning_read_cb(uint16_t conn_handle, uint16_t attr_handle,
                                 struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     (void)arg;
+
+    // Check if connection is encrypted and authenticated
+    if (!is_connection_secure(conn_handle))
+    {
+        ESP_LOGW(TAG, "Rejecting provisioning read - connection not encrypted/authenticated");
+        return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+    }
 
     const ble_uuid_t *uuid = ctxt->chr->uuid;
 
@@ -262,6 +302,13 @@ static int provisioning_write_cb(uint16_t conn_handle, uint16_t attr_handle,
                                  struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     (void)arg;
+
+    // Check if connection is encrypted and authenticated
+    if (!is_connection_secure(conn_handle))
+    {
+        ESP_LOGW(TAG, "Rejecting provisioning write - connection not encrypted/authenticated");
+        return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+    }
 
     const ble_uuid_t *uuid = ctxt->chr->uuid;
     struct os_mbuf *om = ctxt->om;

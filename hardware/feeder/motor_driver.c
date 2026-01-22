@@ -9,6 +9,7 @@ static gpio_num_t motor_in1 = GPIO_NUM_NC;
 static gpio_num_t motor_in2 = GPIO_NUM_NC;
 static gpio_num_t motor_in3 = GPIO_NUM_NC;
 static gpio_num_t motor_in4 = GPIO_NUM_NC;
+static bool motor_initialized = false;
 
 static const uint8_t step_sequence[8] = {
     0b1000, // Step 1: IN1 HIGH
@@ -31,7 +32,26 @@ static void set_motor_step(uint8_t step_pattern)
 
 static void motor_stop(void)
 {
+    if (!motor_initialized)
+    {
+        return;
+    }
+
     set_motor_step(0b0000);
+    esp_rom_delay_us(10000); // 10ms delay for complete power-down
+
+    // gpio_config_t io_conf = {
+    //     .pin_bit_mask = ((1ULL << motor_in1) |
+    //                      (1ULL << motor_in2) |
+    //                      (1ULL << motor_in3) |
+    //                      (1ULL << motor_in4)),
+    //     .mode = GPIO_MODE_INPUT,
+    //     .pull_up_en = GPIO_PULLUP_DISABLE,
+    //     .pull_down_en = GPIO_PULLDOWN_ENABLE, // Pull-down ensures LOW when disconnected
+    //     .intr_type = GPIO_INTR_DISABLE};
+    // gpio_config(&io_conf);
+
+    ESP_LOGD(TAG, "Motor stopped - GPIOs set to INPUT with pull-down");
 }
 
 static void motor_rotate_steps(int steps)
@@ -40,6 +60,17 @@ static void motor_rotate_steps(int steps)
     {
         return;
     }
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = ((1ULL << motor_in1) |
+                         (1ULL << motor_in2) |
+                         (1ULL << motor_in3) |
+                         (1ULL << motor_in4)),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE};
+    gpio_config(&io_conf);
 
     int direction = (steps > 0) ? 1 : -1;
     int abs_steps = (steps > 0) ? steps : -steps;
@@ -88,6 +119,7 @@ void motor_driver_init(gpio_num_t in1, gpio_num_t in2, gpio_num_t in3, gpio_num_
         .intr_type = GPIO_INTR_DISABLE};
     gpio_config(&io_conf);
 
+    motor_initialized = true;
     motor_stop();
 
     ESP_LOGI(TAG, "Motor driver initialized (GPIOs: %d, %d, %d, %d)",

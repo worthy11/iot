@@ -19,8 +19,8 @@
 #include "nvs_flash.h"
 
 #define NUM_READINGS 5
-#define TEMP_INTERVAL_MS 5 * 1000
-#define PH_INTERVAL_MS 2 * 1000
+#define TEMP_INTERVAL_MS 1000
+#define PH_INTERVAL_MS 1000
 #define MAX_FEED_ATTEMPTS 5
 
 static const char *TAG = "hardware_manager";
@@ -69,7 +69,11 @@ float hardware_manager_measure_temp(void)
 {
     float temp_sum = 0.0f;
     int valid_readings = 0;
-    bool connected = (event_manager_get_bits() & EVENT_BIT_BLE_CONNECTED) || (event_manager_get_bits() & EVENT_BIT_WIFI_STATUS);
+    EventBits_t bits = event_manager_get_bits();
+    bool ble_connected = ((bits & EVENT_BIT_BLE_CONNECTED) ||
+                          (bits & EVENT_BIT_PAIRING_MODE_ON) ||
+                          (bits & EVENT_BIT_WIFI_STATUS) ||
+                          (bits & EVENT_BIT_BLE_ADVERTISING)) != 0;
 
     for (int i = 0; i < NUM_READINGS; i++)
     {
@@ -94,9 +98,9 @@ float hardware_manager_measure_temp(void)
 
         if (i < NUM_READINGS - 1)
         {
-            if (connected)
+            if (ble_connected)
             {
-                ESP_LOGD(TAG, "Skipping light sleep");
+                ESP_LOGD(TAG, "Skipping light sleep - BLE connected");
                 vTaskDelay(pdMS_TO_TICKS(TEMP_INTERVAL_MS));
             }
             else
@@ -131,7 +135,11 @@ float hardware_manager_measure_ph(void)
 
     float ph_sum = 0.0f;
     int valid_readings = 0;
-    bool connected = (event_manager_get_bits() & EVENT_BIT_BLE_CONNECTED) || (event_manager_get_bits() & EVENT_BIT_WIFI_STATUS);
+    EventBits_t bits = event_manager_get_bits();
+    bool ble_connected = ((bits & EVENT_BIT_BLE_CONNECTED) ||
+                          (bits & EVENT_BIT_PAIRING_MODE_ON) ||
+                          (bits & EVENT_BIT_WIFI_STATUS) ||
+                          (bits & EVENT_BIT_BLE_ADVERTISING)) != 0;
 
     for (int i = 0; i < NUM_READINGS; i++)
     {
@@ -149,9 +157,9 @@ float hardware_manager_measure_ph(void)
 
         if (i < NUM_READINGS - 1)
         {
-            if (connected)
+            if (ble_connected)
             {
-                ESP_LOGD(TAG, "Skipping light sleep");
+                ESP_LOGD(TAG, "Skipping light sleep - BLE connected");
                 vTaskDelay(pdMS_TO_TICKS(PH_INTERVAL_MS));
             }
             else
@@ -185,6 +193,15 @@ bool hardware_manager_feed(void)
 {
     break_beam_power_on();
 
+    // Verify sensor is working before attempting to feed
+    if (!break_beam_is_sensor_working())
+    {
+        ESP_LOGW(TAG, "Break beam sensor not working or not connected");
+        break_beam_power_off();
+        hardware_manager_display_event("feed_status", 0.0f);
+        return false;
+    }
+
     TaskHandle_t beam_task_handle = NULL;
     xTaskCreate(
         break_beam_monitor,
@@ -215,11 +232,11 @@ bool hardware_manager_feed(void)
 
     if (beam_task_handle != NULL)
     {
-        // Power off the break beam sensor before deleting the task
-        break_beam_power_off();
         vTaskDelete(beam_task_handle);
         beam_task_handle = NULL;
     }
+
+    break_beam_power_off();
 
     if (feed_successful)
     {

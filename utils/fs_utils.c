@@ -1,6 +1,7 @@
 #include "fs_utils.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
+#include "esp_heap_caps.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -11,10 +12,13 @@
 #include <time.h>
 #include "esp_random.h"
 #include <unistd.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "fs_utils";
 
 static bool fs_mounted = false;
+static SemaphoreHandle_t s_spiffs_mutex = NULL;
 
 esp_err_t fs_utils_init(void)
 {
@@ -59,6 +63,19 @@ esp_err_t fs_utils_init(void)
     }
 
     fs_mounted = true;
+
+    // Create SPIFFS mutex
+    if (s_spiffs_mutex == NULL)
+    {
+        s_spiffs_mutex = xSemaphoreCreateMutex();
+        if (s_spiffs_mutex == NULL)
+        {
+            ESP_LOGE(TAG, "Failed to create SPIFFS mutex");
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "SPIFFS mutex initialized");
+    }
+
     ESP_LOGI(TAG, "SPIFFS initialized successfully");
     return ESP_OK;
 }
@@ -79,11 +96,23 @@ static void generate_id(char *id, size_t id_size)
              (unsigned long)(random_bytes[3] & 0xFFFF));
 }
 
-esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload, time_t timestamp, char *log_id, size_t log_id_size)
+esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload, char *log_id, size_t log_id_size)
 {
     if (!fs_mounted)
     {
         return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_spiffs_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "SPIFFS mutex not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(s_spiffs_mutex, portMAX_DELAY) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "Failed to acquire SPIFFS mutex");
+        return ESP_FAIL;
     }
 
     // Load existing logs
@@ -118,37 +147,22 @@ esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload
         fclose(file);
     }
 
-    // Parse payload JSON to store it directly
     cJSON *payload_json = cJSON_Parse(payload);
     if (payload_json == NULL)
     {
-        // If parsing fails, store as string
+        ESP_LOGE(TAG, "Failed to parse payload JSON");
         payload_json = cJSON_CreateString(payload);
     }
 
-    // Create new log entry
     cJSON *entry = cJSON_CreateObject();
-    char id[37];
-    generate_id(id, sizeof(id));
+    // ID removed - logs are cleared on boot anyway
 
-    // Return the ID to caller
-    if (log_id != NULL && log_id_size > 0)
-    {
-        strncpy(log_id, id, log_id_size - 1);
-        log_id[log_id_size - 1] = '\0';
-    }
-
-    cJSON_AddStringToObject(entry, "id", id);
-    cJSON_AddNumberToObject(entry, "ts", (double)timestamp);
     cJSON_AddStringToObject(entry, "topic", topic);
     cJSON_AddNumberToObject(entry, "qos", qos);
-
-    // Store the payload JSON directly (no wrapper)
     cJSON_AddItemToObject(entry, "payload", payload_json);
 
     cJSON_AddItemToArray(log_array, entry);
 
-    // Keep only last MAX_LOG_MESSAGES
     int array_size = cJSON_GetArraySize(log_array);
     if (array_size > MAX_LOG_MESSAGES)
     {
@@ -169,6 +183,7 @@ esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload
         {
             cJSON_Delete(payload_json);
         }
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_FAIL;
     }
 
@@ -184,38 +199,66 @@ esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload
     // payload_json is now owned by the entry, don't delete it here
     cJSON_Delete(log_array);
 
-    ESP_LOGI(TAG, "Saved MQTT log entry: topic=%s, id=%s", topic, id);
+    ESP_LOGI(TAG, "Saved MQTT log entry: topic=%s", topic);
+    xSemaphoreGive(s_spiffs_mutex);
     return ESP_OK;
 }
 
 esp_err_t fs_utils_load_mqtt_logs(char **topics, int **qos, char **payloads, time_t **timestamps, char ***log_ids, size_t *count)
 {
+    size_t free_heap_before = esp_get_free_heap_size();
+    size_t largest_block_before = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    ESP_LOGI(TAG, "Loading MQTT logs - free heap: %zu bytes, largest block: %zu bytes", free_heap_before, largest_block_before);
+
     if (!fs_mounted)
     {
+        ESP_LOGE(TAG, "Filesystem not mounted");
         return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_spiffs_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "SPIFFS mutex not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(s_spiffs_mutex, portMAX_DELAY) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "Failed to acquire SPIFFS mutex");
+        return ESP_FAIL;
     }
 
     *count = 0;
     FILE *file = fopen(FS_MQTT_LOG_FILE, "r");
     if (file == NULL)
     {
+        ESP_LOGI(TAG, "MQTT log file not found");
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NOT_FOUND;
     }
 
     fseek(file, 0, SEEK_END);
     long file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
+    ESP_LOGI(TAG, "MQTT log file size: %ld bytes", file_size);
 
     if (file_size == 0)
     {
+        ESP_LOGI(TAG, "MQTT log file is empty");
         fclose(file);
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NOT_FOUND;
     }
+
+    size_t free_heap_before_buffer = esp_get_free_heap_size();
+    ESP_LOGI(TAG, "Allocating buffer for file content: %ld bytes (free heap: %zu)", file_size + 1, free_heap_before_buffer);
 
     char *buffer = malloc(file_size + 1);
     if (buffer == NULL)
     {
+        ESP_LOGE(TAG, "Failed to allocate buffer: %ld bytes (free heap: %zu)", file_size + 1, free_heap_before_buffer);
         fclose(file);
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NO_MEM;
     }
 
@@ -226,11 +269,13 @@ esp_err_t fs_utils_load_mqtt_logs(char **topics, int **qos, char **payloads, tim
     {
         ESP_LOGW(TAG, "Failed to read complete file: expected %ld bytes, read %zu bytes", file_size, bytes_read);
         free(buffer);
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_INVALID_RESPONSE;
     }
 
     buffer[file_size] = '\0';
 
+    ESP_LOGI(TAG, "Parsing JSON from buffer (%ld bytes)", file_size);
     cJSON *log_array = cJSON_Parse(buffer);
     const char *error_ptr = cJSON_GetErrorPtr();
 
@@ -245,7 +290,8 @@ esp_err_t fs_utils_load_mqtt_logs(char **topics, int **qos, char **payloads, tim
         ESP_LOGE(TAG, "File content (first %zu chars): %s", log_len, log_buf);
         ESP_LOGW(TAG, "Clearing corrupted log file and starting fresh");
         free(buffer);
-        // Clear the corrupted file
+        xSemaphoreGive(s_spiffs_mutex);
+        // Clear the corrupted file (will acquire mutex internally)
         fs_utils_clear_mqtt_logs();
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -256,88 +302,130 @@ esp_err_t fs_utils_load_mqtt_logs(char **topics, int **qos, char **payloads, tim
         cJSON_Delete(log_array);
         free(buffer);
         ESP_LOGW(TAG, "Clearing corrupted log file and starting fresh");
-        // Clear the corrupted file
+        xSemaphoreGive(s_spiffs_mutex);
+        // Clear the corrupted file (will acquire mutex internally)
         fs_utils_clear_mqtt_logs();
         return ESP_ERR_INVALID_RESPONSE;
     }
 
     free(buffer);
+    size_t free_heap_after_buffer = esp_get_free_heap_size();
+    ESP_LOGI(TAG, "Buffer freed, free heap: %zu bytes", free_heap_after_buffer);
 
     int array_size = cJSON_GetArraySize(log_array);
+    ESP_LOGI(TAG, "Found %d log entries in JSON array", array_size);
+
     if (array_size == 0)
     {
+        ESP_LOGI(TAG, "No log entries found");
         cJSON_Delete(log_array);
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NOT_FOUND;
     }
 
-    // Allocate arrays
-    *topics = malloc(array_size * 256);
-    *qos = malloc(array_size * sizeof(int));
-    *payloads = malloc(array_size * 512);
-    *timestamps = malloc(array_size * sizeof(time_t));
-    *log_ids = malloc(array_size * sizeof(char *));
+    // Use smaller fixed sizes - most topics are < 100 bytes, payloads < 200 bytes
+    // This saves significant memory compared to 256/512 per entry
+    #define TOPIC_SIZE 128
+    #define PAYLOAD_SIZE 256
 
-    if (*topics == NULL || *qos == NULL || *payloads == NULL || *timestamps == NULL || *log_ids == NULL)
+    // Calculate memory needed
+    size_t topics_size = array_size * TOPIC_SIZE;
+    size_t qos_size = array_size * sizeof(int);
+    size_t payloads_size = array_size * PAYLOAD_SIZE;
+    size_t timestamps_size = array_size * sizeof(time_t);
+    size_t total_needed = topics_size + qos_size + payloads_size + timestamps_size;
+
+    size_t free_heap_before_alloc = esp_get_free_heap_size();
+    ESP_LOGI(TAG, "Allocating arrays for %d entries:", array_size);
+    ESP_LOGI(TAG, "  - topics: %zu bytes (%d * %d)", topics_size, array_size, TOPIC_SIZE);
+    ESP_LOGI(TAG, "  - qos: %zu bytes (%d * %zu)", qos_size, array_size, sizeof(int));
+    ESP_LOGI(TAG, "  - payloads: %zu bytes (%d * %d)", payloads_size, array_size, PAYLOAD_SIZE);
+    ESP_LOGI(TAG, "  - timestamps: %zu bytes (%d * %zu)", timestamps_size, array_size, sizeof(time_t));
+    ESP_LOGI(TAG, "  - Total needed: %zu bytes", total_needed);
+    ESP_LOGI(TAG, "  - Free heap before allocation: %zu bytes", free_heap_before_alloc);
+
+    // Allocate arrays (ID removed - not needed since logs are cleared on boot)
+    *topics = malloc(topics_size);
+    if (*topics == NULL)
     {
+        ESP_LOGE(TAG, "Failed to allocate topics array: %zu bytes", topics_size);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Allocated topics array: %zu bytes", topics_size);
+    }
+
+    *qos = malloc(qos_size);
+    if (*qos == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to allocate qos array: %zu bytes", qos_size);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Allocated qos array: %zu bytes", qos_size);
+    }
+
+    *payloads = malloc(payloads_size);
+    if (*payloads == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to allocate payloads array: %zu bytes", payloads_size);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Allocated payloads array: %zu bytes", payloads_size);
+    }
+
+    *timestamps = malloc(timestamps_size);
+    if (*timestamps == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to allocate timestamps array: %zu bytes", timestamps_size);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Allocated timestamps array: %zu bytes", timestamps_size);
+    }
+
+    *log_ids = NULL; // Not used anymore
+
+    if (*topics == NULL || *qos == NULL || *payloads == NULL || *timestamps == NULL)
+    {
+        ESP_LOGE(TAG, "One or more allocations failed - cleaning up");
         free(*topics);
         free(*qos);
         free(*payloads);
         free(*timestamps);
-        free(*log_ids);
         cJSON_Delete(log_array);
+        xSemaphoreGive(s_spiffs_mutex);
+        size_t free_heap_after_fail = esp_get_free_heap_size();
+        ESP_LOGE(TAG, "Free heap after cleanup: %zu bytes", free_heap_after_fail);
         return ESP_ERR_NO_MEM;
     }
 
-    // Allocate individual log ID strings
-    for (int i = 0; i < array_size; i++)
-    {
-        (*log_ids)[i] = malloc(37);
-        if ((*log_ids)[i] == NULL)
-        {
-            // Cleanup on failure
-            for (int j = 0; j < i; j++)
-            {
-                free((*log_ids)[j]);
-            }
-            free(*topics);
-            free(*qos);
-            free(*payloads);
-            free(*timestamps);
-            free(*log_ids);
-            cJSON_Delete(log_array);
-            return ESP_ERR_NO_MEM;
-        }
-    }
+    size_t free_heap_after_alloc = esp_get_free_heap_size();
+    ESP_LOGI(TAG, "All arrays allocated successfully. Free heap after allocation: %zu bytes (used: %zu bytes)",
+             free_heap_after_alloc, free_heap_before_alloc - free_heap_after_alloc);
 
     // Parse entries
+    ESP_LOGI(TAG, "Parsing %d log entries", array_size);
     for (int i = 0; i < array_size; i++)
     {
         cJSON *entry = cJSON_GetArrayItem(log_array, i);
         if (entry == NULL)
         {
+            ESP_LOGW(TAG, "Entry %d is NULL, skipping", i);
             continue;
         }
 
-        cJSON *id_item = cJSON_GetObjectItem(entry, "id");
         cJSON *ts_item = cJSON_GetObjectItem(entry, "ts");
         cJSON *topic_item = cJSON_GetObjectItem(entry, "topic");
         cJSON *qos_item = cJSON_GetObjectItem(entry, "qos");
         cJSON *payload_item = cJSON_GetObjectItem(entry, "payload");
-
-        // Extract log ID
-        if (id_item != NULL && cJSON_IsString(id_item))
-        {
-            strncpy((*log_ids)[i], id_item->valuestring, 36);
-            (*log_ids)[i][36] = '\0';
-        }
-        else
-        {
-            (*log_ids)[i][0] = '\0';
-        }
+        // ID field removed - not needed since logs are cleared on boot
 
         if (topic_item != NULL && cJSON_IsString(topic_item))
         {
-            strncpy(*topics + i * 256, topic_item->valuestring, 255);
+            strncpy(*topics + i * TOPIC_SIZE, topic_item->valuestring, TOPIC_SIZE - 1);
+            (*topics)[i * TOPIC_SIZE + TOPIC_SIZE - 1] = '\0';
         }
         if (qos_item != NULL && cJSON_IsNumber(qos_item))
         {
@@ -353,15 +441,29 @@ esp_err_t fs_utils_load_mqtt_logs(char **topics, int **qos, char **payloads, tim
             char *payload_str = cJSON_Print(payload_item);
             if (payload_str != NULL)
             {
-                strncpy(*payloads + i * 512, payload_str, 511);
-                (*payloads)[i * 512 + 511] = '\0';
+                size_t payload_len = strlen(payload_str);
+                if (payload_len >= PAYLOAD_SIZE)
+                {
+                    ESP_LOGW(TAG, "Entry %d payload too long (%zu bytes), truncating to %d", i, payload_len, PAYLOAD_SIZE - 1);
+                }
+                strncpy(*payloads + i * PAYLOAD_SIZE, payload_str, PAYLOAD_SIZE - 1);
+                (*payloads)[i * PAYLOAD_SIZE + PAYLOAD_SIZE - 1] = '\0';
                 free(payload_str);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Failed to print payload for entry %d", i);
             }
         }
     }
 
     *count = array_size;
     cJSON_Delete(log_array);
+    xSemaphoreGive(s_spiffs_mutex);
+
+    size_t free_heap_final = esp_get_free_heap_size();
+    ESP_LOGI(TAG, "Successfully loaded %zu MQTT log entries. Free heap: %zu bytes (started with %zu, used %zu)",
+             *count, free_heap_final, free_heap_before, free_heap_before - free_heap_final);
     return ESP_OK;
 }
 
@@ -370,6 +472,18 @@ esp_err_t fs_utils_remove_mqtt_log(const char *id)
     if (!fs_mounted || id == NULL)
     {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_spiffs_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "SPIFFS mutex not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(s_spiffs_mutex, portMAX_DELAY) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "Failed to acquire SPIFFS mutex");
+        return ESP_FAIL;
     }
 
     FILE *file = fopen(FS_MQTT_LOG_FILE, "r");
@@ -442,6 +556,7 @@ esp_err_t fs_utils_remove_mqtt_log(const char *id)
     if (file == NULL)
     {
         cJSON_Delete(log_array);
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_FAIL;
     }
 
@@ -454,6 +569,7 @@ esp_err_t fs_utils_remove_mqtt_log(const char *id)
     fclose(file);
 
     cJSON_Delete(log_array);
+    xSemaphoreGive(s_spiffs_mutex);
     return ESP_OK;
 }
 
@@ -475,9 +591,22 @@ size_t fs_utils_get_mqtt_log_count(void)
         return 0;
     }
 
+    if (s_spiffs_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "SPIFFS mutex not initialized");
+        return 0;
+    }
+
+    if (xSemaphoreTake(s_spiffs_mutex, portMAX_DELAY) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "Failed to acquire SPIFFS mutex");
+        return 0;
+    }
+
     FILE *file = fopen(FS_MQTT_LOG_FILE, "r");
     if (file == NULL)
     {
+        xSemaphoreGive(s_spiffs_mutex);
         return 0;
     }
 
@@ -488,6 +617,7 @@ size_t fs_utils_get_mqtt_log_count(void)
     if (file_size == 0)
     {
         fclose(file);
+        xSemaphoreGive(s_spiffs_mutex);
         return 0;
     }
 
@@ -495,6 +625,7 @@ size_t fs_utils_get_mqtt_log_count(void)
     if (buffer == NULL)
     {
         fclose(file);
+        xSemaphoreGive(s_spiffs_mutex);
         return 0;
     }
 
@@ -511,11 +642,13 @@ size_t fs_utils_get_mqtt_log_count(void)
         {
             cJSON_Delete(log_array);
         }
+        xSemaphoreGive(s_spiffs_mutex);
         return 0;
     }
 
     size_t count = cJSON_GetArraySize(log_array);
     cJSON_Delete(log_array);
+    xSemaphoreGive(s_spiffs_mutex);
     return count;
 }
 
@@ -555,9 +688,22 @@ esp_err_t fs_utils_load_root_ca(char *root_ca_pem, size_t *len)
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (s_spiffs_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "SPIFFS mutex not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(s_spiffs_mutex, portMAX_DELAY) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "Failed to acquire SPIFFS mutex");
+        return ESP_FAIL;
+    }
+
     FILE *file = fopen(FS_ROOT_CA_FILE, "r");
     if (file == NULL)
     {
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -568,6 +714,7 @@ esp_err_t fs_utils_load_root_ca(char *root_ca_pem, size_t *len)
     if (file_size > *len)
     {
         fclose(file);
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NO_MEM;
     }
 
@@ -576,10 +723,12 @@ esp_err_t fs_utils_load_root_ca(char *root_ca_pem, size_t *len)
 
     if (read != file_size)
     {
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_FAIL;
     }
 
     *len = read;
+    xSemaphoreGive(s_spiffs_mutex);
     return ESP_OK;
 }
 
@@ -618,9 +767,22 @@ esp_err_t fs_utils_load_device_certificate(char *device_cert_pem, size_t *len)
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (s_spiffs_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "SPIFFS mutex not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(s_spiffs_mutex, portMAX_DELAY) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "Failed to acquire SPIFFS mutex");
+        return ESP_FAIL;
+    }
+
     FILE *file = fopen(FS_DEVICE_CERT_FILE, "r");
     if (file == NULL)
     {
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -631,6 +793,7 @@ esp_err_t fs_utils_load_device_certificate(char *device_cert_pem, size_t *len)
     if (file_size > *len)
     {
         fclose(file);
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NO_MEM;
     }
 
@@ -639,10 +802,12 @@ esp_err_t fs_utils_load_device_certificate(char *device_cert_pem, size_t *len)
 
     if (read != file_size)
     {
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_FAIL;
     }
 
     *len = read;
+    xSemaphoreGive(s_spiffs_mutex);
     return ESP_OK;
 }
 
@@ -681,9 +846,22 @@ esp_err_t fs_utils_load_private_key(char *private_key_pem, size_t *len)
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (s_spiffs_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "SPIFFS mutex not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(s_spiffs_mutex, portMAX_DELAY) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "Failed to acquire SPIFFS mutex");
+        return ESP_FAIL;
+    }
+
     FILE *file = fopen(FS_PRIVATE_KEY_FILE, "r");
     if (file == NULL)
     {
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -694,6 +872,7 @@ esp_err_t fs_utils_load_private_key(char *private_key_pem, size_t *len)
     if (file_size > *len)
     {
         fclose(file);
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NO_MEM;
     }
 
@@ -702,10 +881,12 @@ esp_err_t fs_utils_load_private_key(char *private_key_pem, size_t *len)
 
     if (read != file_size)
     {
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_FAIL;
     }
 
     *len = read;
+    xSemaphoreGive(s_spiffs_mutex);
     return ESP_OK;
 }
 
@@ -736,15 +917,29 @@ esp_err_t fs_utils_load_client_id(char *client_id, size_t client_id_len)
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (s_spiffs_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "SPIFFS mutex not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(s_spiffs_mutex, portMAX_DELAY) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "Failed to acquire SPIFFS mutex");
+        return ESP_FAIL;
+    }
+
     FILE *file = fopen(FS_CLIENT_ID_FILE, "r");
     if (file == NULL)
     {
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_ERR_NOT_FOUND;
     }
 
     if (fgets(client_id, client_id_len, file) == NULL)
     {
         fclose(file);
+        xSemaphoreGive(s_spiffs_mutex);
         return ESP_FAIL;
     }
 
@@ -757,5 +952,6 @@ esp_err_t fs_utils_load_client_id(char *client_id, size_t client_id_len)
 
     fclose(file);
     ESP_LOGI(TAG, "Loaded client ID from filesystem: %s", client_id);
+    xSemaphoreGive(s_spiffs_mutex);
     return ESP_OK;
 }

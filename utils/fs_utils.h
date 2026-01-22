@@ -22,7 +22,7 @@
 esp_err_t fs_utils_init(void);
 
 // MQTT log functions
-esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload, time_t timestamp, char *log_id, size_t log_id_size);
+esp_err_t fs_utils_save_mqtt_log(const char *topic, int qos, const char *payload, char *log_id, size_t log_id_size);
 esp_err_t fs_utils_load_mqtt_logs(char **topics, int **qos, char **payloads, time_t **timestamps, char ***log_ids, size_t *count);
 esp_err_t fs_utils_remove_mqtt_log(const char *id);
 esp_err_t fs_utils_clear_mqtt_logs(void);

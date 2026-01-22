@@ -37,26 +37,8 @@ void app_main(void)
     ESP_LOGI(TAG, "OTA state check: err=%s, state=%d (PENDING_VERIFY=%d)",
              esp_err_to_name(ota_state_err), ota_state, ESP_OTA_IMG_PENDING_VERIFY);
 
-    // Track if we're in PENDING_VERIFY state (before marking valid)
-    bool was_pending_verify = (ota_state_err == ESP_OK && ota_state == ESP_OTA_IMG_PENDING_VERIFY);
-
-    if (was_pending_verify)
-    {
-        ESP_LOGI(TAG, "New OTA firmware detected - running verification...");
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
-
-        ESP_LOGI(TAG, "OTA firmware verification passed - marking as valid");
-        esp_err_t ret = esp_ota_mark_app_valid_cancel_rollback();
-        if (ret != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to mark app as valid: %s", esp_err_to_name(ret));
-        }
-        else
-        {
-            ESP_LOGI(TAG, "OTA firmware marked as valid - rollback cancelled");
-        }
-    }
+    // OTA verification and marking as valid is handled in event_manager_init()
+    // after NVS is initialized, so we can check for pending_ota flag
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
@@ -66,33 +48,11 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // After NVS init, save pending version if we just marked OTA as valid
-    if (was_pending_verify)
+    // Initialize NVS utils (creates mutex for NVS operations)
+    ret = nvs_utils_init();
+    if (ret != ESP_OK)
     {
-        // Try to load and save pending version (NVS is now initialized)
-        char pending_version[32] = {0};
-        size_t version_size = sizeof(pending_version);
-        esp_err_t load_err = nvs_load_blob("firmware", "pending_version", pending_version, &version_size);
-        if (load_err == ESP_OK)
-        {
-            // Ensure null termination
-            pending_version[sizeof(pending_version) - 1] = '\0';
-
-            // Save as confirmed version
-            esp_err_t save_err = nvs_save_blob("firmware", "version", pending_version, strlen(pending_version) + 1);
-            if (save_err == ESP_OK)
-            {
-                ESP_LOGI(TAG, "Firmware version confirmed and saved: %s", pending_version);
-            }
-            else
-            {
-                ESP_LOGW(TAG, "Failed to save confirmed firmware version: %s", esp_err_to_name(save_err));
-            }
-        }
-        else
-        {
-            ESP_LOGW(TAG, "No pending firmware version found in NVS");
-        }
+        ESP_LOGE(TAG, "Failed to initialize NVS utils: %s", esp_err_to_name(ret));
     }
 
     // Initialize SPIFFS filesystem

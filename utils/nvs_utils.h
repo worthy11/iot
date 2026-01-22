@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <time.h>
 
+esp_err_t nvs_utils_init(void);
 esp_err_t nvs_save_blob(const char *namespace, const char *key, const void *value, size_t len);
 esp_err_t nvs_load_blob(const char *namespace, const char *key, void *value, size_t *len);
 
