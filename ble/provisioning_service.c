@@ -10,7 +10,8 @@
 #include "event_manager.h"
 #include "utils/fs_utils.h"
 #include "utils/nvs_utils.h"
-#include "wifi_manager.h"
+#include "wifi/wifi_manager.h"
+#include "mqtt/mqtt_manager.h"
 #include <string.h>
 
 #define WIFI_CONFIG_NAMESPACE "wifi_cfg"
@@ -201,18 +202,18 @@ static bool is_connection_secure(uint16_t conn_handle)
         ESP_LOGW(TAG, "Failed to find connection: %d", rc);
         return false;
     }
-    
+
     // Check if pairing mode is active - allow provisioning even without encryption
     EventBits_t bits = event_manager_get_bits();
     bool pairing_mode_active = (bits & EVENT_BIT_PAIRING_MODE_ON) != 0;
-    
+
     if (pairing_mode_active)
     {
         // In pairing mode, allow provisioning even before encryption is established
         ESP_LOGD(TAG, "Pairing mode active - allowing provisioning access");
         return true;
     }
-    
+
     // Outside pairing mode, require encryption and authentication
     if (desc.sec_state.encrypted)
     {
@@ -419,8 +420,32 @@ static int provisioning_write_cb(uint16_t conn_handle, uint16_t attr_handle,
         ESP_LOGI(TAG, "Apply characteristic written - saving all provisioning data");
         save_all_provisioning_data();
         s_current_write_uuid = NULL;
+
+        // Reload WiFi and MQTT configuration with new provisioning data
+        ESP_LOGI(TAG, "Reloading WiFi configuration...");
+        esp_err_t wifi_err = wifi_manager_load_config();
+        if (wifi_err == ESP_OK)
+        {
+            ESP_LOGI(TAG, "WiFi configuration reloaded successfully");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Failed to reload WiFi configuration: %s", esp_err_to_name(wifi_err));
+        }
+
+        ESP_LOGI(TAG, "Reloading MQTT configuration...");
+        esp_err_t mqtt_err = mqtt_manager_load_config();
+        if (mqtt_err == ESP_OK)
+        {
+            ESP_LOGI(TAG, "MQTT configuration reloaded successfully");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Failed to reload MQTT configuration: %s", esp_err_to_name(mqtt_err));
+        }
+
         event_manager_set_bits(EVENT_BIT_PROVISIONING_CHANGED);
-        ESP_LOGI(TAG, "Provisioning data saved and change event triggered");
+        ESP_LOGI(TAG, "Provisioning data saved, configs reloaded, and change event triggered");
     }
     else if (ble_uuid_cmp(uuid, &PROV_FORGET_DEVICE_UUID.u) == 0)
     {

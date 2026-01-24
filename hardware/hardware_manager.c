@@ -70,10 +70,10 @@ float hardware_manager_measure_temp(void)
     float temp_sum = 0.0f;
     int valid_readings = 0;
     EventBits_t bits = event_manager_get_bits();
-    bool ble_connected = ((bits & EVENT_BIT_BLE_CONNECTED) ||
+    bool ble_connected = ((bits & EVENT_BIT_BLE_ADVERTISING) ||
                           (bits & EVENT_BIT_PAIRING_MODE_ON) ||
-                          (bits & EVENT_BIT_WIFI_STATUS) ||
-                          (bits & EVENT_BIT_BLE_ADVERTISING)) != 0;
+                          (bits & EVENT_BIT_BLE_CONNECTED) ||
+                          (bits & EVENT_BIT_PUBLISH_SCHEDULED)) != 0;
 
     for (int i = 0; i < NUM_READINGS; i++)
     {
@@ -136,10 +136,10 @@ float hardware_manager_measure_ph(void)
     float ph_sum = 0.0f;
     int valid_readings = 0;
     EventBits_t bits = event_manager_get_bits();
-    bool ble_connected = ((bits & EVENT_BIT_BLE_CONNECTED) ||
+    bool ble_connected = ((bits & EVENT_BIT_BLE_ADVERTISING) ||
                           (bits & EVENT_BIT_PAIRING_MODE_ON) ||
-                          (bits & EVENT_BIT_WIFI_STATUS) ||
-                          (bits & EVENT_BIT_BLE_ADVERTISING)) != 0;
+                          (bits & EVENT_BIT_BLE_CONNECTED) ||
+                          (bits & EVENT_BIT_PUBLISH_SCHEDULED)) != 0;
 
     for (int i = 0; i < NUM_READINGS; i++)
     {

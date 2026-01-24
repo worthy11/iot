@@ -30,6 +30,7 @@
 #define ADVERTISING_INTERVAL_MS (60 * 1000)
 #define PH_CONFIRMATION_TIMEOUT_MS (30 * 1000)
 #define CONNECTION_TIMEOUT_MS (15 * 1000)
+#define TIME_SYNC_TIMEOUT_MS (60 * 60 * 1000)
 #define EVENT_MANAGER_NVS_NAMESPACE "event_mgr"
 
 static const char *TAG = "event_manager";
@@ -39,6 +40,7 @@ static TimerHandle_t ble_timer = NULL;
 static TimerHandle_t publish_timer = NULL;
 static TimerHandle_t temp_reading_timer = NULL;
 static TimerHandle_t feeding_timer = NULL;
+static TimerHandle_t time_sync_timer = NULL;
 static uint32_t publish_interval_sec = 0;
 static uint32_t g_temp_reading_interval_sec = 0;
 static uint32_t g_feeding_interval_sec = 0;
@@ -50,7 +52,6 @@ static float ph_upper = INFINITY;
 
 // Time synchronization variables
 static int64_t g_synced_time_ms = 0;    // Last synced time in milliseconds (Unix timestamp)
-static int64_t g_synced_uptime_us = 0;  // Uptime in microseconds when time was synced
 static bool g_time_synced = false;      // Whether time has been synced
 static bool g_sntp_initialized = false; // Whether SNTP has been initialized
 
@@ -62,13 +63,10 @@ static void sntp_sync_time_cb(struct timeval *tv)
     ESP_LOGI(TAG, "SNTP time synchronized: %ld", (long)tv->tv_sec);
 
     // Update internal time sync variables when SNTP syncs
-    int64_t current_uptime_us = esp_timer_get_time();
     g_synced_time_ms = (int64_t)tv->tv_sec * 1000LL + (int64_t)tv->tv_usec / 1000LL;
-    g_synced_uptime_us = current_uptime_us;
     g_time_synced = true;
 
-    ESP_LOGI(TAG, "Updated time sync: synced_time_ms=%lld, synced_uptime_us=%lld",
-             (long long)g_synced_time_ms, (long long)g_synced_uptime_us);
+    ESP_LOGI(TAG, "Updated time sync: synced_time_ms=%lld", (long long)g_synced_time_ms);
 
     event_manager_set_bits(EVENT_BIT_TIME_SYNC);
 }
@@ -83,7 +81,7 @@ static void initialize_sntp(void)
 
     ESP_LOGI(TAG, "Initializing SNTP");
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(0, "tempus1.gum.gov.pl");
     esp_sntp_set_time_sync_notification_cb(sntp_sync_time_cb);
     esp_sntp_init();
 
@@ -185,6 +183,11 @@ static void feeding_timer_callback(TimerHandle_t xTimer)
     event_manager_set_bits(EVENT_BIT_FEED_SCHEDULED);
 }
 
+static void time_sync_timer_callback(TimerHandle_t xTimer)
+{
+    event_manager_set_bits(EVENT_BIT_TIME_SYNC);
+}
+
 static void load_intervals(void)
 {
     // Load intervals and last times from NVS
@@ -224,6 +227,7 @@ static void load_intervals(void)
         uint32_t temp_remaining;
         uint32_t feed_remaining;
         uint32_t publish_remaining;
+        uint32_t time_sync_remaining;
     } timer_remaining_data_t;
 
     timer_remaining_data_t timer_data;
@@ -364,6 +368,56 @@ static void load_intervals(void)
             ESP_LOGI(TAG, "Setting publish timer to remaining time: %lu seconds", (unsigned long)remaining_sec);
             xTimerChangePeriod(publish_timer, pdMS_TO_TICKS(remaining_sec * 1000), 0);
             xTimerStart(publish_timer, 0);
+        }
+    }
+
+    // Set time sync timer - only restore from NVS if time is already synced
+    // Otherwise, timer will be started after successful sync
+    if (time_sync_timer != NULL && g_time_synced)
+    {
+        uint32_t remaining_sec = 0;
+        bool should_trigger = false;
+
+        if (use_saved_timers)
+        {
+            if (timer_data.time_sync_remaining == 0)
+            {
+                // Timer expired (remaining = 0) - trigger immediately
+                should_trigger = true;
+                remaining_sec = TIME_SYNC_TIMEOUT_MS / 1000;
+            }
+            else if (timer_data.time_sync_remaining > 0 && timer_data.time_sync_remaining <= (TIME_SYNC_TIMEOUT_MS / 1000))
+            {
+                // Valid remaining time - use it
+                remaining_sec = timer_data.time_sync_remaining;
+            }
+            else
+            {
+                // Invalid value (greater than 24h) - reset to full interval
+                ESP_LOGW(TAG, "Invalid time_sync_remaining value (%lu sec), resetting to %lu sec",
+                         (unsigned long)timer_data.time_sync_remaining, (unsigned long)(TIME_SYNC_TIMEOUT_MS / 1000));
+                remaining_sec = TIME_SYNC_TIMEOUT_MS / 1000;
+            }
+        }
+        else
+        {
+            // No saved timer or invalid, set full interval
+            remaining_sec = TIME_SYNC_TIMEOUT_MS / 1000;
+        }
+
+        if (should_trigger)
+        {
+            ESP_LOGI(TAG, "Time sync timer expired, triggering immediately");
+            TickType_t period_ticks = pdMS_TO_TICKS(remaining_sec * 1000);
+            xTimerChangePeriod(time_sync_timer, period_ticks, portMAX_DELAY);
+            xTimerStart(time_sync_timer, portMAX_DELAY);
+            event_manager_set_bits(EVENT_BIT_TIME_SYNC);
+        }
+        else
+        {
+            ESP_LOGI(TAG, "Setting time sync timer to remaining time: %lu seconds", (unsigned long)remaining_sec);
+            xTimerChangePeriod(time_sync_timer, pdMS_TO_TICKS(remaining_sec * 1000), 0);
+            xTimerStart(time_sync_timer, 0);
         }
     }
 }
@@ -532,8 +586,6 @@ uint32_t event_manager_get_feed_timer_remaining_sec(void)
         return 0;
     }
 
-    // Always use the actual timer expiry time when timer is active
-    // This ensures the reported remaining time matches what the timer actually has
     if (xTimerIsTimerActive(feeding_timer) == pdTRUE)
     {
         TickType_t expiry_time = xTimerGetExpiryTime(feeding_timer);
@@ -617,6 +669,38 @@ static uint32_t get_ble_timer_remaining_sec(void)
     return remaining_ms / 1000;
 }
 
+static uint32_t get_time_sync_timer_remaining_sec(void)
+{
+    if (time_sync_timer == NULL)
+    {
+        return 0;
+    }
+
+    if (xTimerIsTimerActive(time_sync_timer) == pdFALSE)
+    {
+        return 0;
+    }
+
+    TickType_t expiry_time = xTimerGetExpiryTime(time_sync_timer);
+    TickType_t current_time = xTaskGetTickCount();
+
+    // Handle timer overflow
+    TickType_t remaining_ticks;
+    if (expiry_time > current_time)
+    {
+        remaining_ticks = expiry_time - current_time;
+    }
+    else
+    {
+        // Timer has already expired or will expire very soon
+        return 0;
+    }
+
+    // Convert ticks to seconds (portTICK_PERIOD_MS is in milliseconds)
+    uint32_t remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+    return remaining_ms / 1000;
+}
+
 static void activity_counter_increment(void)
 {
     if (activity_counter_mutex != NULL && xSemaphoreTake(activity_counter_mutex, portMAX_DELAY) == pdTRUE)
@@ -663,16 +747,15 @@ bool event_manager_is_activity_running(void)
 
 int64_t event_manager_get_current_timestamp_ms(void)
 {
-    if (g_time_synced)
+    // Use system time directly
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) == 0)
     {
-        // Return synced time + current uptime
-        int64_t current_uptime_us = esp_timer_get_time();
-        int64_t elapsed_ms = (current_uptime_us - g_synced_uptime_us) / 1000LL;
-        return g_synced_time_ms + elapsed_ms;
+        return (int64_t)tv.tv_sec * 1000LL + (int64_t)tv.tv_usec / 1000LL;
     }
     else
     {
-        // Time not synced yet, return uptime
+        // Fallback to uptime if system time not available
         return esp_timer_get_time() / 1000LL;
     }
 }
@@ -684,7 +767,7 @@ void event_manager_advertising_task(void *pvParameters)
 
     while (1)
     {
-        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_BLE_ADVERTISING, true, false, portMAX_DELAY);
+        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_BLE_ADVERTISING, false, false, portMAX_DELAY);
         if (bits & EVENT_BIT_BLE_ADVERTISING)
         {
             ble_start_advertising();
@@ -695,7 +778,7 @@ void event_manager_advertising_task(void *pvParameters)
             {
                 ESP_LOGI(TAG, "BLE connected");
 
-                bits = event_manager_wait_bits(EVENT_BIT_BLE_DISCONNECTED, true, false, portMAX_DELAY);
+                bits = event_manager_wait_bits(EVENT_BIT_BLE_DISCONNECTED, false, false, portMAX_DELAY);
                 if (bits & EVENT_BIT_BLE_DISCONNECTED)
                 {
                     ESP_LOGI(TAG, "BLE disconnected");
@@ -715,6 +798,7 @@ void event_manager_advertising_task(void *pvParameters)
                 xTimerStart(ble_timer, portMAX_DELAY);
             }
 
+            event_manager_clear_bits(EVENT_BIT_BLE_ADVERTISING);
             event_manager_set_bits(EVENT_BIT_DEEP_SLEEP);
         }
     }
@@ -891,6 +975,7 @@ static void event_manager_action_task(void *pvParameters)
             else
             {
                 mqtt_manager_enqueue_feed(false);
+                vTaskDelay(pdMS_TO_TICKS(1000));
                 mqtt_manager_enqueue_log("hardware_error", "feed_failed");
             }
 
@@ -1039,14 +1124,30 @@ void event_manager_connection_task(void *pvParameters)
 
             initialize_sntp();
 
-            bits = event_manager_wait_bits(EVENT_BIT_TIME_SYNC, true, false, pdMS_TO_TICKS(30000));
-            if (bits & EVENT_BIT_TIME_SYNC)
+            // Check if time is already synced before waiting
+            if (g_time_synced)
             {
-                ESP_LOGI(TAG, "Time synchronized successfully");
+                ESP_LOGI(TAG, "Time already synchronized");
             }
             else
             {
-                ESP_LOGW(TAG, "Time synchronization timeout");
+                // Wait for SNTP sync with timeout (30 seconds)
+                bits = event_manager_wait_bits(EVENT_BIT_TIME_SYNC, true, false, pdMS_TO_TICKS(portMAX_DELAY));
+                if (bits & EVENT_BIT_TIME_SYNC)
+                {
+                    ESP_LOGI(TAG, "Time synchronized successfully");
+                }
+            }
+
+            // Start time sync timer after synchronization (if timer exists and time is synced)
+            // Always reset to full 24 hours after successful sync, regardless of any saved value
+            if (g_time_synced && time_sync_timer != NULL)
+            {
+                // Stop timer first to ensure clean restart
+                xTimerStop(time_sync_timer, portMAX_DELAY);
+                TickType_t period_ticks = pdMS_TO_TICKS(TIME_SYNC_TIMEOUT_MS);
+                xTimerChangePeriod(time_sync_timer, period_ticks, portMAX_DELAY);
+                xTimerStart(time_sync_timer, portMAX_DELAY);
             }
 
             wifi_manager_stop();
@@ -1168,6 +1269,7 @@ void event_manager_sleep_task(void *pvParameters)
             uint32_t feed_remaining = event_manager_get_feed_timer_remaining_sec();
             uint32_t ble_remaining = get_ble_timer_remaining_sec();
             uint32_t publish_remaining = get_publish_timer_remaining_sec();
+            uint32_t time_sync_remaining = get_time_sync_timer_remaining_sec();
 
             ESP_LOGI(TAG, "Timer remaining times - Temp: %lu sec, Feed: %lu sec, BLE: %lu sec, Publish: %lu sec",
                      (unsigned long)temp_remaining,
@@ -1233,6 +1335,7 @@ void event_manager_sleep_task(void *pvParameters)
                 uint32_t temp_remaining;
                 uint32_t feed_remaining;
                 uint32_t publish_remaining;
+                uint32_t time_sync_remaining;
             } timer_remaining_data_t;
 
             timer_remaining_data_t timer_data = {0};
@@ -1294,6 +1397,25 @@ void event_manager_sleep_task(void *pvParameters)
                 }
             }
 
+            // Save time sync timer remaining time
+            if (time_sync_remaining > 0)
+            {
+                if (time_sync_remaining > sleep_duration_sec)
+                {
+                    timer_data.time_sync_remaining = time_sync_remaining - sleep_duration_sec;
+                }
+                else
+                {
+                    // Timer will expire during sleep - save 0 to trigger immediately on wake
+                    timer_data.time_sync_remaining = 0;
+                }
+            }
+            else
+            {
+                // Timer expired or not active - save full interval so it triggers after sleep
+                timer_data.time_sync_remaining = TIME_SYNC_TIMEOUT_MS / 1000;
+            }
+
             esp_err_t nvs_err = nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "timer_remaining", &timer_data, sizeof(timer_data));
             if (nvs_err != ESP_OK)
             {
@@ -1304,34 +1426,37 @@ void event_manager_sleep_task(void *pvParameters)
                 ESP_LOGI(TAG, "Saved timer remaining values to NVS before sleep");
             }
 
-            // Save time sync data before sleep: current synced time + uptime + sleep duration
+            // Save time sync data before sleep: current time + sleep duration
             if (g_time_synced)
             {
-                int64_t current_uptime_us = esp_timer_get_time();
-                int64_t elapsed_ms = (current_uptime_us - g_synced_uptime_us) / 1000LL;
-                int64_t current_time_ms = g_synced_time_ms + elapsed_ms;
-                int64_t time_after_sleep_ms = current_time_ms + (sleep_duration_sec * 1000LL);
-
-                typedef struct
+                struct timeval tv;
+                if (gettimeofday(&tv, NULL) == 0)
                 {
-                    int64_t synced_time_ms;
-                    int64_t synced_uptime_us;
-                } time_sync_data_t;
+                    int64_t current_time_ms = (int64_t)tv.tv_sec * 1000LL + (int64_t)tv.tv_usec / 1000LL;
+                    int64_t time_after_sleep_ms = current_time_ms + (sleep_duration_sec * 1000LL);
 
-                time_sync_data_t sync_data = {
-                    .synced_time_ms = time_after_sleep_ms,
-                    .synced_uptime_us = 0 // Reset to 0 after sleep (new boot)
-                };
+                    typedef struct
+                    {
+                        int64_t synced_time_ms;
+                    } time_sync_data_t;
 
-                nvs_err = nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "time_sync", &sync_data, sizeof(sync_data));
-                if (nvs_err != ESP_OK)
-                {
-                    ESP_LOGW(TAG, "Failed to save time sync data before sleep: %s", esp_err_to_name(nvs_err));
+                    time_sync_data_t sync_data = {
+                        .synced_time_ms = time_after_sleep_ms};
+
+                    nvs_err = nvs_save_blob(EVENT_MANAGER_NVS_NAMESPACE, "time_sync", &sync_data, sizeof(sync_data));
+                    if (nvs_err != ESP_OK)
+                    {
+                        ESP_LOGW(TAG, "Failed to save time sync data before sleep: %s", esp_err_to_name(nvs_err));
+                    }
+                    else
+                    {
+                        ESP_LOGI(TAG, "Saved time sync data before sleep: current_time=%lld ms, sleep_duration=%lu sec, time_after_sleep=%lld ms",
+                                 (long long)current_time_ms, (unsigned long)sleep_duration_sec, (long long)time_after_sleep_ms);
+                    }
                 }
                 else
                 {
-                    ESP_LOGI(TAG, "Saved time sync data before sleep: current_time=%lld ms, sleep_duration=%lu sec, time_after_sleep=%lld ms",
-                             (long long)current_time_ms, (unsigned long)sleep_duration_sec, (long long)time_after_sleep_ms);
+                    ESP_LOGW(TAG, "Failed to get system time before sleep");
                 }
             }
 
@@ -1361,41 +1486,8 @@ void event_manager_init(void)
     initialize_sntp();
     mqtt_manager_init();
 
-    // Load saved time from NVS
-    typedef struct
-    {
-        int64_t synced_time_ms;
-        int64_t synced_uptime_us;
-    } time_sync_data_t;
-
-    time_sync_data_t sync_data;
-    size_t sync_data_size = sizeof(sync_data);
-    esp_err_t load_err = nvs_load_blob(EVENT_MANAGER_NVS_NAMESPACE, "time_sync", &sync_data, &sync_data_size);
-
-    if (load_err == ESP_OK && sync_data_size == sizeof(sync_data))
-    {
-        // Load saved time and calculate current time based on uptime
-        g_synced_time_ms = sync_data.synced_time_ms;
-        g_synced_uptime_us = sync_data.synced_uptime_us;
-        int64_t current_uptime_us = esp_timer_get_time();
-        int64_t elapsed_ms = (current_uptime_us - g_synced_uptime_us) / 1000LL;
-        int64_t current_time_ms = g_synced_time_ms + elapsed_ms;
-
-        // Set system time from saved time + uptime
-        struct timeval tv;
-        tv.tv_sec = current_time_ms / 1000LL;
-        tv.tv_usec = (current_time_ms % 1000LL) * 1000LL;
-        settimeofday(&tv, NULL);
-
-        ESP_LOGI(TAG, "Loaded saved time from NVS: synced_time=%lld ms, synced_uptime=%lld us, current_time=%lld ms",
-                 (long long)g_synced_time_ms, (long long)g_synced_uptime_us, (long long)current_time_ms);
-        g_time_synced = true;
-    }
-    else
-    {
-        ESP_LOGI(TAG, "No saved time in NVS, will sync on first WiFi connection");
-        g_time_synced = false;
-    }
+    // Don't load time from NVS here - will attempt sync first, then fall back if sync fails
+    g_time_synced = false;
 
     // Load thresholds from NVS
     size_t threshold_size = sizeof(float);
@@ -1444,34 +1536,9 @@ void event_manager_init(void)
         hardware_manager_display_wake();
         hardware_manager_display_update();
 
-        // Start WiFi and sync time on normal boot
         ESP_LOGI(TAG, "Starting WiFi and time synchronization on normal boot");
-        wifi_manager_start();
+        event_manager_set_bits(EVENT_BIT_TIME_SYNC);
 
-        // Wait for WiFi connection, then trigger time sync in connection task
-        EventBits_t bits = event_manager_wait_bits(EVENT_BIT_WIFI_STATUS, false, false, pdMS_TO_TICKS(30000));
-        if (bits & EVENT_BIT_WIFI_STATUS)
-        {
-            ESP_LOGI(TAG, "WiFi connected, requesting time synchronization...");
-            // Trigger time sync in connection task
-            event_manager_set_bits(EVENT_BIT_TIME_SYNC);
-            // Wait for time sync to complete
-            bits = event_manager_wait_bits(EVENT_BIT_TIME_SYNC, false, false, pdMS_TO_TICKS(30000));
-            if (bits & EVENT_BIT_TIME_SYNC)
-            {
-                ESP_LOGI(TAG, "Time synchronized successfully");
-            }
-            else
-            {
-                ESP_LOGW(TAG, "Time synchronization timeout");
-            }
-        }
-        else
-        {
-            ESP_LOGW(TAG, "WiFi connection timeout on normal boot");
-        }
-
-        // Check if OTA confirmation is pending
         uint8_t pending_flag = 0;
         size_t pending_flag_size = sizeof(pending_flag);
         esp_err_t pending_load_err = nvs_load_blob("firmware", "pending_ota", &pending_flag, &pending_flag_size);
@@ -1595,6 +1662,13 @@ void event_manager_init(void)
         pdFALSE,
         NULL,
         ble_connection_timer_callback);
+
+    time_sync_timer = xTimerCreate(
+        "time_sync_timer",
+        pdMS_TO_TICKS(TIME_SYNC_TIMEOUT_MS),
+        pdFALSE,
+        NULL,
+        time_sync_timer_callback);
 
     if (publish_timer == NULL || temp_reading_timer == NULL || feeding_timer == NULL)
     {

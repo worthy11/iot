@@ -18,6 +18,13 @@
 // Maximum messages in log file
 #define MAX_LOG_MESSAGES 100
 
+// Buffer sizes for loaded log entries
+// Topics: MAC address (12 chars, no colons) + "/" + suffix ("temp"/"ph"/"feed"/"log")
+//   Max: 12 + 1 + 4 = 17 characters, using 20 for safety
+#define FS_UTILS_TOPIC_SIZE 20
+// Payloads: JSON with event, value, and timestamp - max ~112 chars, using 128 for safety
+#define FS_UTILS_PAYLOAD_SIZE 128
+
 // Initialize SPIFFS filesystem
 esp_err_t fs_utils_init(void);
 

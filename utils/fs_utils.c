@@ -323,10 +323,16 @@ esp_err_t fs_utils_load_mqtt_logs(char **topics, int **qos, char **payloads, tim
         return ESP_ERR_NOT_FOUND;
     }
 
-    // Use smaller fixed sizes - most topics are < 100 bytes, payloads < 200 bytes
-    // This saves significant memory compared to 256/512 per entry
-    #define TOPIC_SIZE 128
-    #define PAYLOAD_SIZE 256
+    // Limit to maximum 10 entries at a time to prevent memory issues
+    // #define MAX_ENTRIES_TO_LOAD 10
+    //     if (array_size > MAX_ENTRIES_TO_LOAD)
+    //     {
+    //         ESP_LOGW(TAG, "Limiting entries from %d to %d to prevent memory issues", array_size, MAX_ENTRIES_TO_LOAD);
+    //         array_size = MAX_ENTRIES_TO_LOAD;
+    //     }
+
+#define TOPIC_SIZE FS_UTILS_TOPIC_SIZE
+#define PAYLOAD_SIZE FS_UTILS_PAYLOAD_SIZE
 
     // Calculate memory needed
     size_t topics_size = array_size * TOPIC_SIZE;

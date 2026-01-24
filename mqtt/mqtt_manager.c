@@ -63,8 +63,6 @@ static void add_timestamp_to_json(char *buffer, size_t buffer_size, const char *
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &timeinfo);
     ESP_LOGI(TAG, "Current system time when adding timestamp: %s (timestamp: %ld)", time_str, (long)current_time);
 
-    int64_t timestamp_ms = event_manager_get_current_timestamp_ms();
-
     if (strstr(message, "\"timestamp\"") != NULL)
     {
         strncpy(buffer, message, buffer_size - 1);
@@ -97,7 +95,7 @@ static void add_timestamp_to_json(char *buffer, size_t buffer_size, const char *
     }
 
     char timestamp_str[32];
-    snprintf(timestamp_str, sizeof(timestamp_str), "\"timestamp\":%lld", (long long)timestamp_ms);
+    snprintf(timestamp_str, sizeof(timestamp_str), "\"timestamp\":%lld", (long long)current_time * 1000);
     strcat(buffer, timestamp_str);
 
     strcat(buffer, "}");
@@ -246,7 +244,7 @@ static void publish_queued(void)
         strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &timeinfo);
         ESP_LOGI(TAG, "Current system time before publish: %s (timestamp: %ld)", time_str, (long)current_time);
 
-        char *full_topic = topics + i * 128; // TOPIC_SIZE = 128
+        char *full_topic = topics + i * FS_UTILS_TOPIC_SIZE;
         char *topic_suffix = strchr(full_topic, '/');
         if (topic_suffix == NULL)
         {
@@ -259,7 +257,7 @@ static void publish_queued(void)
         }
 
         // Use the publish function
-        publish(topic_suffix, payloads + i * 256); // PAYLOAD_SIZE = 256
+        publish(topic_suffix, payloads + i * FS_UTILS_PAYLOAD_SIZE);
     }
 
     // Clear the entire log file after publishing all queued messages
@@ -1025,9 +1023,6 @@ esp_err_t mqtt_manager_load_config(void)
 
 void mqtt_manager_init(void)
 {
-    // ESP_LOGI(TAG, "Clearing all queued MQTT messages on boot");
-    // fs_utils_clear_mqtt_logs();
-
     esp_err_t err = mqtt_manager_load_config();
     if (err == ESP_OK)
     {

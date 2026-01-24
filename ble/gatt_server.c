@@ -39,8 +39,6 @@ static void nimble_host_config_init(void)
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
     ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
     ble_hs_cfg.gatts_register_arg = NULL;
-    // Note: sm_io_cb is not a field in ble_hs_cfg
-    // The passkey callback is handled through GAP events or must be set differently
 
     ble_store_config_init();
 }

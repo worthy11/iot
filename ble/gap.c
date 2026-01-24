@@ -13,7 +13,7 @@
 
 #include "event_manager.h"
 #include "hardware/hardware_manager.h"
-#include "host/ble_sm.h"
+#include <inttypes.h>
 
 #define PREFERRED_MTU 512 // Request larger MTU for faster data transfer
 
@@ -120,6 +120,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                 {
                     // Pairing mode is ON - allow new devices to pair
                     ESP_LOGI(TAG, "Device connected in pairing mode - initiating security");
+                    ESP_LOGI(TAG, "Calling ble_gap_security_initiate for conn_handle=%d", event->connect.conn_handle);
                     rc = ble_gap_security_initiate(event->connect.conn_handle);
                     if (rc != 0)
                     {
@@ -134,6 +135,10 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                         event_manager_set_bits(EVENT_BIT_BLE_DISCONNECTED);
                         return 0;
                     }
+                    else
+                    {
+                        ESP_LOGI(TAG, "Security initiation successful - waiting for encryption change event");
+                    }
                 }
                 else
                 {
@@ -141,19 +146,48 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                     // If we initiate security without checking, it will allow pairing even if mode is off
                     // Use ble_store_read_peer_sec to check if security keys exist for this peer
                     ESP_LOGI(TAG, "Pairing mode OFF - checking for existing bond in store");
-                    ESP_LOGI(TAG, "Peer address: type=%d, val=%02x:%02x:%02x:%02x:%02x:%02x",
+                    ESP_LOGI(TAG, "Peer ID address: type=%d, val=%02x:%02x:%02x:%02x:%02x:%02x",
                              desc.peer_id_addr.type,
                              desc.peer_id_addr.val[0], desc.peer_id_addr.val[1],
                              desc.peer_id_addr.val[2], desc.peer_id_addr.val[3],
                              desc.peer_id_addr.val[4], desc.peer_id_addr.val[5]);
 
                     struct ble_store_key_sec key_sec;
+                    struct ble_store_value_sec value_sec;
+                    rc = -1;
+
+                    // Try looking up bond using peer_id_addr (identity address)
                     memset(&key_sec, 0, sizeof(key_sec));
                     key_sec.peer_addr = desc.peer_id_addr;
-
-                    struct ble_store_value_sec value_sec;
                     memset(&value_sec, 0, sizeof(value_sec));
                     rc = ble_store_read_peer_sec(&key_sec, &value_sec);
+                    ESP_LOGI(TAG, "Bond lookup with peer_id_addr: rc=%d", rc);
+
+                    // If not found, try with different address types (public vs random)
+                    if (rc != 0)
+                    {
+                        // Try with opposite address type
+                        ble_addr_t alt_addr = desc.peer_id_addr;
+                        if (alt_addr.type == BLE_ADDR_PUBLIC)
+                        {
+                            alt_addr.type = BLE_ADDR_RANDOM;
+                        }
+                        else if (alt_addr.type == BLE_ADDR_RANDOM)
+                        {
+                            alt_addr.type = BLE_ADDR_PUBLIC;
+                        }
+
+                        ESP_LOGI(TAG, "Trying bond lookup with alternate address type: type=%d", alt_addr.type);
+                        memset(&key_sec, 0, sizeof(key_sec));
+                        key_sec.peer_addr = alt_addr;
+                        memset(&value_sec, 0, sizeof(value_sec));
+                        int alt_rc = ble_store_read_peer_sec(&key_sec, &value_sec);
+                        ESP_LOGI(TAG, "Bond lookup with alternate address type: rc=%d", alt_rc);
+                        if (alt_rc == 0)
+                        {
+                            rc = 0; // Found with alternate address type
+                        }
+                    }
 
                     if (rc == 0)
                     {
@@ -247,30 +281,29 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
         return rc;
 
     case BLE_GAP_EVENT_ENC_CHANGE:
-        ESP_LOGI(TAG, "BLE_GAP_EVENT_ENC_CHANGE received: conn_handle=%d, status=%d",
-                 event->enc_change.conn_handle, event->enc_change.status);
-        struct ble_gap_conn_desc desc;
-        rc = ble_gap_conn_find(event->enc_change.conn_handle, &desc);
-        if (rc == 0)
+        // Encryption has been enabled or disabled for this connection
+        if (event->enc_change.status == 0)
         {
-            ESP_LOGI(TAG, "Connection desc: encrypted=%d, authenticated=%d, bonded=%d",
-                     desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
-            if (event->enc_change.status == 0 && desc.sec_state.encrypted)
-            {
-                ESP_LOGI(TAG, "Connection successfully encrypted and authenticated");
-                ESP_LOGI(TAG, "Security state: encrypted=%d, authenticated=%d, bonded=%d",
-                         desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
+            ESP_LOGI(TAG, "Connection encrypted!");
 
-                bool is_bonded = desc.sec_state.bonded;
+            rc = ble_gap_conn_find(event->enc_change.conn_handle, &desc);
+            if (rc == 0)
+            {
+                ESP_LOGI(TAG, "Connection state: encrypted=%d, authenticated=%d, bonded=%d",
+                         desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
 
                 EventBits_t bits = event_manager_get_bits();
                 bool pairing_mode_active = (bits & EVENT_BIT_PAIRING_MODE_ON) != 0;
 
-                if (is_bonded)
+                if (desc.sec_state.bonded)
                 {
-                    // Bonded device - encryption restored from stored keys
-                    ESP_LOGI(TAG, "Bonded device connected - encryption restored from stored keys");
-                    ESP_LOGI(TAG, "Bond information is saved and encryption restored successfully");
+                    ESP_LOGI(TAG, "Bonded device - encryption restored from stored keys");
+                    if (pairing_mode_active)
+                    {
+                        ESP_LOGI(TAG, "Bonded device connected - clearing pairing mode");
+                        event_manager_clear_bits(EVENT_BIT_PAIRING_MODE_ON);
+                        event_manager_set_bits(EVENT_BIT_PAIRING_MODE_OFF);
+                    }
                 }
                 else
                 {
@@ -286,9 +319,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                     else
                     {
                         ESP_LOGI(TAG, "New unbonded device successfully paired in pairing mode");
-                        // Bonding should be saved automatically by NimBLE store via ble_store_util_status_rr callback
-                        // The bond is saved when key distribution completes during pairing
                         // Check bond status multiple times as it may be saved asynchronously
+                        bool bond_verified = false;
                         for (int i = 0; i < 10; i++)
                         {
                             vTaskDelay(pdMS_TO_TICKS(200));
@@ -299,73 +331,81 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                                          i + 1, desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
                                 if (desc.sec_state.bonded)
                                 {
-                                    ESP_LOGI(TAG, "Bond successfully established and saved to store!");
-                                    break;
+                                    // Verify bond is actually in store
+                                    struct ble_store_key_sec key_sec;
+                                    struct ble_store_value_sec value_sec;
+                                    memset(&key_sec, 0, sizeof(key_sec));
+                                    key_sec.peer_addr = desc.peer_id_addr;
+                                    memset(&value_sec, 0, sizeof(value_sec));
+                                    rc = ble_store_read_peer_sec(&key_sec, &value_sec);
+
+                                    if (rc == 0)
+                                    {
+                                        ESP_LOGI(TAG, "Bond successfully established and verified in store!");
+                                        ESP_LOGI(TAG, "Bond saved with peer_id_addr: type=%d, val=%02x:%02x:%02x:%02x:%02x:%02x",
+                                                 desc.peer_id_addr.type,
+                                                 desc.peer_id_addr.val[0], desc.peer_id_addr.val[1],
+                                                 desc.peer_id_addr.val[2], desc.peer_id_addr.val[3],
+                                                 desc.peer_id_addr.val[4], desc.peer_id_addr.val[5]);
+                                        bond_verified = true;
+                                        event_manager_clear_bits(EVENT_BIT_PAIRING_MODE_ON);
+                                        event_manager_set_bits(EVENT_BIT_PAIRING_MODE_OFF);
+                                        break;
+                                    }
+                                    else
+                                    {
+                                        ESP_LOGW(TAG, "Bond marked as bonded but not found in store (rc=%d) - waiting...", rc);
+                                    }
                                 }
                             }
                         }
-                        if (!desc.sec_state.bonded)
+                        if (!bond_verified)
                         {
-                            ESP_LOGW(TAG, "Bond was not saved after pairing - this may indicate a store issue");
-                            ESP_LOGW(TAG, "Device will need to pair again on next connection");
+                            ESP_LOGW(TAG, "Bond was not verified in store after pairing - this may indicate a store issue");
+                            ESP_LOGW(TAG, "Device may need to pair again on next connection");
                         }
                     }
                 }
             }
-            else if (event->enc_change.status != 0)
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Connection encryption failed, status: %d", event->enc_change.status);
+
+            EventBits_t bits = event_manager_get_bits();
+            bool pairing_mode_active = (bits & EVENT_BIT_PAIRING_MODE_ON) != 0;
+
+            if (pairing_mode_active)
             {
-                const char *error_desc = "Unknown error";
-                switch (event->enc_change.status)
+                ESP_LOGW(TAG, "Encryption failed but pairing mode is active - allowing connection to continue for provisioning");
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Encryption failed and pairing mode is OFF - terminating connection");
+                rc = ble_gap_terminate(event->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                if (rc != 0)
                 {
-                case 7:
-                    error_desc = "Invalid parameters";
-                    break;
-                case 13:
-                    error_desc = "Operation preempted/cancelled (client may have cancelled pairing)";
-                    break;
-                case 1028:
-                    error_desc = "Message size error";
-                    break;
-                case 1292:
-                    error_desc = "Unknown error";
-                    break;
+                    ESP_LOGE(TAG, "Failed to terminate connection: %d", rc);
                 }
-                ESP_LOGE(TAG, "Encryption change failed with status: %d (%s)", event->enc_change.status, error_desc);
-
-                // Check if pairing mode is active - allow connection to continue even if encryption fails
-                EventBits_t bits = event_manager_get_bits();
-                bool pairing_mode_active = (bits & EVENT_BIT_PAIRING_MODE_ON) != 0;
-
-                if (pairing_mode_active)
-                {
-                    ESP_LOGW(TAG, "Encryption failed but pairing mode is active - allowing connection to continue for provisioning");
-                    // Don't terminate - allow provisioning even without encryption in pairing mode
-                    // This is intentional: some clients may cancel pairing but still want to provision
-                }
-                else
-                {
-                    // Outside pairing mode, terminate connection if encryption fails
-                    ESP_LOGW(TAG, "Encryption failed and pairing mode is OFF - terminating connection");
-                    rc = ble_gap_terminate(event->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-                    if (rc != 0)
-                    {
-                        ESP_LOGE(TAG, "Failed to terminate connection: %d", rc);
-                    }
-                    event_manager_clear_bits(EVENT_BIT_BLE_CONNECTED);
-                    event_manager_set_bits(EVENT_BIT_BLE_DISCONNECTED);
-                }
+                event_manager_clear_bits(EVENT_BIT_BLE_CONNECTED);
+                event_manager_set_bits(EVENT_BIT_BLE_DISCONNECTED);
             }
         }
-        event_manager_clear_bits(EVENT_BIT_PAIRING_MODE_ON);
-        event_manager_set_bits(EVENT_BIT_PAIRING_MODE_OFF);
         return rc;
-
 
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "Disconnected from peer; reason=%d (0x%02x)",
                  event->disconnect.reason, event->disconnect.reason);
         event_manager_clear_bits(EVENT_BIT_BLE_CONNECTED);
         event_manager_set_bits(EVENT_BIT_BLE_DISCONNECTED);
+
+        EventBits_t bits = event_manager_get_bits();
+        if (bits & EVENT_BIT_PAIRING_MODE_ON)
+        {
+            ESP_LOGI(TAG, "Device disconnected during pairing - clearing pairing mode");
+            event_manager_clear_bits(EVENT_BIT_PAIRING_MODE_ON);
+            event_manager_set_bits(EVENT_BIT_PAIRING_MODE_OFF);
+        }
         return rc;
 
     case BLE_GAP_EVENT_CONN_UPDATE:
@@ -397,6 +437,91 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "MTU exchange complete: conn_handle=%d, mtu=%d",
                  event->mtu.conn_handle, event->mtu.value);
+        return rc;
+
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        ESP_LOGI(TAG,
+                 "Subscribe event; conn_handle=%d attr_handle=%d "
+                 "reason=%d prevn=%d curn=%d previ=%d curi=%d",
+                 event->subscribe.conn_handle, event->subscribe.attr_handle,
+                 event->subscribe.reason, event->subscribe.prev_notify,
+                 event->subscribe.cur_notify, event->subscribe.prev_indicate,
+                 event->subscribe.cur_indicate);
+
+        // Check if connection needs encryption for this characteristic
+        rc = ble_gap_conn_find(event->subscribe.conn_handle, &desc);
+        if (rc == 0 && (!desc.sec_state.encrypted || !desc.sec_state.authenticated))
+        {
+            EventBits_t bits = event_manager_get_bits();
+            bool pairing_mode_active = (bits & EVENT_BIT_PAIRING_MODE_ON) != 0;
+
+            if (pairing_mode_active)
+            {
+                // In pairing mode, initiate security if not encrypted
+                ESP_LOGI(TAG, "Subscribe requires encryption - initiating security in pairing mode");
+                return ble_gap_security_initiate(event->subscribe.conn_handle);
+            }
+            else
+            {
+                // Outside pairing mode, check if bond exists
+                struct ble_store_key_sec key_sec;
+                memset(&key_sec, 0, sizeof(key_sec));
+                key_sec.peer_addr = desc.peer_id_addr;
+                struct ble_store_value_sec value_sec;
+                memset(&value_sec, 0, sizeof(value_sec));
+
+                if (ble_store_read_peer_sec(&key_sec, &value_sec) == 0)
+                {
+                    ESP_LOGI(TAG, "Bond found - initiating security for subscribe");
+                    return ble_gap_security_initiate(event->subscribe.conn_handle);
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "Subscribe requires encryption but no bond found and pairing mode is OFF");
+                    return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+                }
+            }
+        }
+        return rc;
+
+    case BLE_GAP_EVENT_REPEAT_PAIRING:
+        ESP_LOGI(TAG, "Repeat pairing event - deleting old bond");
+        rc = ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
+        if (rc != 0)
+        {
+            ESP_LOGE(TAG, "Failed to find connection, error code %d", rc);
+            return rc;
+        }
+        ble_store_util_delete_peer(&desc.peer_id_addr);
+        ESP_LOGI(TAG, "Old bond deleted - retrying pairing");
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+
+    case BLE_GAP_EVENT_PASSKEY_ACTION:
+        ESP_LOGI(TAG, "Passkey action event: action=%d, conn_handle=%d",
+                 event->passkey.params.action, event->passkey.conn_handle);
+
+        if (event->passkey.params.action == BLE_SM_IOACT_DISP)
+        {
+            // Generate random 6-digit passkey
+            struct ble_sm_io pkey = {0};
+            pkey.action = event->passkey.params.action;
+            pkey.passkey = 100000 + (esp_random() % 900000);
+
+            char passkey_str[32];
+            snprintf(passkey_str, sizeof(passkey_str), "%06lu", (unsigned long)pkey.passkey);
+            ESP_LOGI(TAG, "Enter passkey %s on the peer side", passkey_str);
+
+            // Display passkey on hardware display
+            hardware_manager_display_event("passkey", (double)pkey.passkey);
+
+            // Inject the passkey
+            rc = ble_sm_inject_io(event->passkey.conn_handle, &pkey);
+            if (rc != 0)
+            {
+                ESP_LOGE(TAG, "Failed to inject security manager IO, error code: %d", rc);
+                return rc;
+            }
+        }
         return rc;
     }
 
@@ -461,36 +586,17 @@ void adv_init(void)
     start_advertising();
 }
 
-static int ble_sm_io_cb(uint32_t passkey, void *arg)
-{
-    (void)arg;
-
-    // Display passkey on the display
-    char passkey_str[32];
-    snprintf(passkey_str, sizeof(passkey_str), "%06lu", (unsigned long)passkey);
-    ESP_LOGI(TAG, "Passkey for pairing: %s", passkey_str);
-
-    // Display passkey on hardware display
-    hardware_manager_display_event("passkey", (double)passkey);
-
-    return 0;
-}
-
 void gap_configure_security(void)
 {
-    // Enable bonding with passkey entry
-    // Device displays passkey that user must enter on their device
-    ble_hs_cfg.sm_io_cap = 0;  // BLE_SM_IO_CAP_DISPLAY_ONLY (value 0) - Display passkey
+    // Enable bonding - bonded devices can connect without passkey
+    // No passkey required - just works pairing
+    ble_hs_cfg.sm_io_cap = 3;  // BLE_SM_IO_CAP_NO_INPUT_NO_OUTPUT (value 3) - No passkey required
     ble_hs_cfg.sm_bonding = 1; // Enable bonding - save bonded devices
-    ble_hs_cfg.sm_mitm = 1;    // Enable MITM protection (requires passkey)
+    ble_hs_cfg.sm_mitm = 0;    // Disable MITM protection (no passkey)
     ble_hs_cfg.sm_sc = 0;      // Legacy pairing (not secure connections)
     // Enable key distribution for bonding
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-    
-    // Note: In NimBLE ESP-IDF, the passkey callback (ble_sm_io_cb) is automatically
-    // called by the stack when sm_io_cap is set to DISPLAY_ONLY and pairing requires a passkey.
-    // The callback function is defined above and will be invoked when needed.
 }
 
 int gap_init(void)
@@ -503,18 +609,6 @@ int gap_init(void)
 
     // Configure security based on pairing mode
     gap_configure_security();
-    
-    // Register passkey callback using ble_sm_set_io_cap
-    // This must be called after gap_configure_security() sets sm_io_cap
-    rc = ble_sm_set_io_cap(0, ble_sm_io_cb, NULL);
-    if (rc != 0)
-    {
-        ESP_LOGE(TAG, "Failed to set SM IO capability callback: %d", rc);
-    }
-    else
-    {
-        ESP_LOGI(TAG, "Passkey display callback registered");
-    }
 
     return rc;
 }

@@ -962,6 +962,10 @@ static void action_factory_settings(void)
     event_manager_set_temp_reading_interval(0);
     event_manager_set_feeding_interval(0);
     event_manager_set_publish_interval(0);
+    event_manager_set_ph_lower(-INFINITY);
+    event_manager_set_ph_upper(INFINITY);
+    event_manager_set_temp_lower(-INFINITY);
+    event_manager_set_temp_upper(INFINITY);
 
     // Reset display settings to defaults
     g_display_settings.temperature_display_enabled = true;
